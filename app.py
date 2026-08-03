@@ -21,7 +21,19 @@ import streamlit as st
 st.set_page_config(
     page_title="OmniRecrut IA", layout="wide", initial_sidebar_state="expanded"
 )
-
+st.markdown(
+    """
+    <style>
+    .stTextInput>div>div>input, .stTextArea>div>div>textarea { 
+        color: #ffffff !important; 
+    }
+    textarea, input {
+        color: #ffffff !important;
+    }
+    </style>
+""",
+    unsafe_allow_html=True,
+)
 # ==============================================================================
 # --- SÉCURITÉ & QUOTAS IA ---
 # ==============================================================================
