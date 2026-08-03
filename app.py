@@ -1,4 +1,3 @@
-
 import datetime
 import email
 from email.header import decode_header
@@ -23,120 +22,173 @@ st.set_page_config(
     page_title="OmniRecrut IA", layout="wide", initial_sidebar_state="expanded"
 )
 
+# ==============================================================================
+# --- SÉCURITÉ & QUOTAS IA ---
+# ==============================================================================
+LIMITE_REQUETES_IA = 300  # Quota mensuel par défaut pour l'offre gratuite
+
+def peut_utiliser_ia(email_utilisateur):
+    """Vérifie si l'utilisateur n'a pas dépassé sa limite mensuelle."""
+    if st.session_state.get("is_admin") or st.session_state.get("user_statut") == "PRO":
+        return True
+    
+    try:
+        conn_q = sqlite3.connect("recrutement_ia.db", check_same_thread=False)
+        c_q = conn_q.cursor()
+        c_q.execute("SELECT nb_requetes_ia, quota_max, statut_abonnement FROM utilisateurs WHERE email = ?", (email_utilisateur,))
+        res = c_q.fetchone()
+        conn_q.close()
+        
+        if res:
+            nb_actuel = res[0] if res[0] is not None else 0
+            q_max = res[1] if res[1] is not None else LIMITE_REQUETES_IA
+            statut = res[2] if res[2] is not None else "GRATUIT"
+            
+            if statut == "PRO":
+                return True
+            return nb_actuel < q_max
+        return True
+    except Exception:
+        return True
+
+def incrémenter_quota_ia(email_utilisateur):
+    """Incrémente le compteur de requêtes IA de l'utilisateur."""
+    if not st.session_state.get("is_admin") and email_utilisateur:
+        try:
+            conn_q = sqlite3.connect("recrutement_ia.db", check_same_thread=False)
+            c_q = conn_q.cursor()
+            c_q.execute("UPDATE utilisateurs SET nb_requetes_ia = COALESCE(nb_requetes_ia, 0) + 1 WHERE email = ?", (email_utilisateur,))
+            conn_q.commit()
+            conn_q.close()
+        except Exception:
+            pass
+
+def reinitialiser_quota_ia(email_utilisateur):
+    """Remet le compteur de requêtes IA d'un utilisateur à 0."""
+    try:
+        conn_q = sqlite3.connect("recrutement_ia.db", check_same_thread=False)
+        c_q = conn_q.cursor()
+        c_q.execute("UPDATE utilisateurs SET nb_requetes_ia = 0 WHERE email = ?", (email_utilisateur,))
+        conn_q.commit()
+        conn_q.close()
+        return True
+    except Exception:
+        return False
+
 
 # --- FONCTION DE GÉNÉRATION PDF (VERSION UTF-8 COMPATIBLE) ---
 def creer_pdf_annonce(titre, contenu):
-  pdf = FPDF()
-  pdf.add_page()
-  pdf.set_font("Helvetica", "B", 16)
-  pdf.cell(200, 10, txt=f"Annonce : {titre}", ln=True, align="C")
-  pdf.ln(10)
-  pdf.set_font("Helvetica", size=11)
-  pdf.multi_cell(0, 10, txt=contenu)
-  chemin = f"Annonce_{titre[:15].replace(' ', '_')}.pdf"
-  pdf.output(chemin)
-  return chemin
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(200, 10, txt=f"Annonce : {titre}", ln=True, align="C")
+    pdf.ln(10)
+    pdf.set_font("Helvetica", size=11)
+    pdf.multi_cell(0, 10, txt=contenu)
+    chemin = f"Annonce_{titre[:15].replace(' ', '_')}.pdf"
+    pdf.output(chemin)
+    return chemin
 
 
 def creer_pdf_candidat(nom, poste, date_rdv, details):
-  pdf = FPDF()
-  pdf.add_page()
-  pdf.set_font("Helvetica", "B", 16)
-  pdf.cell(200, 10, txt=f"Fiche Candidat : {nom}", ln=True, align="C")
-  pdf.ln(10)
-  pdf.set_font("Helvetica", size=12)
-  pdf.cell(200, 10, txt=f"Poste cible : {poste}", ln=True)
-  pdf.cell(200, 10, txt=f"Suivi / RDV : {date_rdv}", ln=True)
-  pdf.ln(5)
-  pdf.set_font("Helvetica", size=11)
-  pdf.multi_cell(0, 10, txt=details)
-  chemin = f"Fiche_{nom.replace(' ', '_')}.pdf"
-  pdf.output(chemin)
-  return chemin
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(200, 10, txt=f"Fiche Candidat : {nom}", ln=True, align="C")
+    pdf.ln(10)
+    pdf.set_font("Helvetica", size=12)
+    pdf.cell(200, 10, txt=f"Poste cible : {poste}", ln=True)
+    pdf.cell(200, 10, txt=f"Suivi / RDV : {date_rdv}", ln=True)
+    pdf.ln(5)
+    pdf.set_font("Helvetica", size=11)
+    pdf.multi_cell(0, 10, txt=details)
+    chemin = f"Fiche_{nom.replace(' ', '_')}.pdf"
+    pdf.output(chemin)
+    return chemin
 
 
 def relever_et_analyser_emails(email_user, pwd_user, imap_server):
-  if not email_user or not pwd_user or not imap_server:
-    return None
-  try:
-    mail = imaplib.IMAP4_SSL(imap_server)
-    mail.login(email_user, pwd_user)
-    mail.select("inbox")
-    status, messages = mail.search(None, "UNSEEN")
-    liste_ids = messages[0].split()
-    if not liste_ids:
-      return None
-    dernier_id = liste_ids[-1]
-    res, msg_data = mail.fetch(dernier_id, "(RFC822)")
-    for response_part in msg_data:
-      if isinstance(response_part, tuple):
-        msg = email.message_from_bytes(response_part[1])
-        for part in msg.walk():
-          if part.get("Content-Disposition") is None:
-            continue
-          nom_fichier = part.get_filename()
-          if nom_fichier and nom_fichier.lower().endswith(".pdf"):
-            contenu_pdf = part.get_payload(decode=True)
-            chemin_temporaire = os.path.join(".", nom_fichier)
-            with open(chemin_temporaire, "wb") as f:
-              f.write(contenu_pdf)
-            mail.logout()
-            return chemin_temporaire
-    mail.logout()
-    return None
-  except:
-    return None
+    if not email_user or not pwd_user or not imap_server:
+        return None
+    try:
+        mail = imaplib.IMAP4_SSL(imap_server)
+        mail.login(email_user, pwd_user)
+        mail.select("inbox")
+        status, messages = mail.search(None, "UNSEEN")
+        liste_ids = messages[0].split()
+        if not liste_ids:
+            return None
+        dernier_id = liste_ids[-1]
+        res, msg_data = mail.fetch(dernier_id, "(RFC822)")
+        for response_part in msg_data:
+            if isinstance(response_part, tuple):
+                msg = email.message_from_bytes(response_part[1])
+                for part in msg.walk():
+                    if part.get("Content-Disposition") is None:
+                        continue
+                    nom_fichier = part.get_filename()
+                    if nom_fichier and nom_fichier.lower().endswith(".pdf"):
+                        contenu_pdf = part.get_payload(decode=True)
+                        chemin_temporaire = os.path.join(".", nom_fichier)
+                        with open(chemin_temporaire, "wb") as f:
+                            f.write(contenu_pdf)
+                        mail.logout()
+                        return chemin_temporaire
+        mail.logout()
+        return None
+    except:
+        return None
 
 
 # --- FONCTION D'ENVOI D'EMAIL AUTOMATIQUE DYNAMIQUE ---
 def envoyer_email_candidat(to_email, sujet, corps_message, email_user, pwd_user):
-  if not email_user or not pwd_user:
-    st.error(
-        "⚠️ Configuration de messagerie manquante. Veuillez renseigner vos"
-        " identifiants e-mail dans la barre latérale."
-    )
-    return False
-  try:
-    # Détection automatique du serveur SMTP selon l'adresse mail (Gmail, Outlook, Yahoo, etc.)
-    smtp_server = "smtp.gmail.com"
-    smtp_port = 587
-    if "outlook" in email_user or "hotmail" in email_user or "live" in email_user:
-      smtp_server = "smtp.office365.com"
-    elif "yahoo" in email_user:
-      smtp_server = "smtp.mail.yahoo.com"
+    if not email_user or not pwd_user:
+        st.error(
+            "⚠️ Configuration de messagerie manquante. Veuillez renseigner vos"
+            " identifiants e-mail dans la barre latérale."
+        )
+        return False
+    try:
+        smtp_server = "smtp.gmail.com"
+        smtp_port = 587
+        if "outlook" in email_user or "hotmail" in email_user or "live" in email_user:
+            smtp_server = "smtp.office365.com"
+        elif "yahoo" in email_user:
+            smtp_server = "smtp.mail.yahoo.com"
 
-    server = smtplib.SMTP(smtp_server, smtp_port)
-    server.starttls()
-    server.login(email_user, pwd_user)
-    msg = MIMEMultipart()
-    msg["From"] = email_user
-    msg["To"] = to_email
-    msg["Subject"] = sujet
-    msg.attach(MIMEText(corps_message, "plain"))
-    server.send_message(msg)
-    server.quit()
-    return True
-  except Exception as e:
-    st.error(f"Erreur technique SMTP lors de l'envoi : {e}")
-    return False
+        server = smtplib.SMTP(smtp_server, smtp_port)
+        server.starttls()
+        server.login(email_user, pwd_user)
+        msg = MIMEMultipart()
+        msg["From"] = email_user
+        msg["To"] = to_email
+        msg["Subject"] = sujet
+        msg.attach(MIMEText(corps_message, "plain"))
+        server.send_message(msg)
+        server.quit()
+        return True
+    except Exception as e:
+        st.error(f"Erreur technique SMTP lors de l'envoi : {e}")
+        return False
 
 
 # --- SYSTEME D'AUTHENTIFICATION ET GESTION DES ACCÈS & MESSAGERIE UTILISATEUR ---
 def check_password():
-  if "password_correct" not in st.session_state:
-    st.session_state["password_correct"] = False
-  if "user_email" not in st.session_state:
-    st.session_state["user_email"] = ""
-  if "is_admin" not in st.session_state:
-    st.session_state["is_admin"] = False
-  if "user_config_email" not in st.session_state:
-    st.session_state["user_config_email"] = {}
+    if "password_correct" not in st.session_state:
+        st.session_state["password_correct"] = False
+    if "user_email" not in st.session_state:
+        st.session_state["user_email"] = ""
+    if "is_admin" not in st.session_state:
+        st.session_state["is_admin"] = False
+    if "user_statut" not in st.session_state:
+        st.session_state["user_statut"] = "GRATUIT"
+    if "user_config_email" not in st.session_state:
+        st.session_state["user_config_email"] = {}
 
-  # Création automatique de la table d'utilisateurs avec paramètres SMTP/IMAP
-  try:
-    conn_auth = sqlite3.connect("recrutement_ia.db", check_same_thread=False)
-    c_auth = conn_auth.cursor()
-    c_auth.execute("""CREATE TABLE IF NOT EXISTS utilisateurs (
+    try:
+        conn_auth = sqlite3.connect("recrutement_ia.db", check_same_thread=False)
+        c_auth = conn_auth.cursor()
+        c_auth.execute("""CREATE TABLE IF NOT EXISTS utilisateurs (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             email TEXT UNIQUE,
                             password TEXT,
@@ -144,64 +196,69 @@ def check_password():
                             est_admin INTEGER DEFAULT 0,
                             mail_perso TEXT DEFAULT '',
                             mail_password TEXT DEFAULT '',
-                            mail_imap TEXT DEFAULT 'imap.gmail.com'
+                            mail_imap TEXT DEFAULT 'imap.gmail.com',
+                            nb_requetes_ia INTEGER DEFAULT 0,
+                            quota_max INTEGER DEFAULT 300,
+                            statut_abonnement TEXT DEFAULT 'GRATUIT'
                         )""")
 
-    # Ajout des colonnes mail_perso si la table existait déjà dans une version antérieure
-    try:
-      c_auth.execute(
-          "ALTER TABLE utilisateurs ADD COLUMN mail_perso TEXT DEFAULT ''"
-      )
-      c_auth.execute(
-          "ALTER TABLE utilisateurs ADD COLUMN mail_password TEXT DEFAULT ''"
-      )
-      c_auth.execute(
-          "ALTER TABLE utilisateurs ADD COLUMN mail_imap TEXT DEFAULT"
-          " 'imap.gmail.com'"
-      )
-    except Exception:
-      pass
+        # Mises à jour progressives de la table
+        for col, dtype in [
+            ("mail_perso", "TEXT DEFAULT ''"),
+            ("mail_password", "TEXT DEFAULT ''"),
+            ("mail_imap", "TEXT DEFAULT 'imap.gmail.com'"),
+            ("nb_requetes_ia", "INTEGER DEFAULT 0"),
+            ("quota_max", "INTEGER DEFAULT 300"),
+            ("statut_abonnement", "TEXT DEFAULT 'GRATUIT'")
+        ]:
+            try:
+                c_auth.execute(f"ALTER TABLE utilisateurs ADD COLUMN {col} {dtype}")
+            except Exception:
+                pass
 
-    # Si la table est vide, création de ton accès Admin principal
-    c_auth.execute("SELECT COUNT(*) FROM utilisateurs")
-    if c_auth.fetchone()[0] == 0:
-      mdp_admin = st.secrets.get("APP_PASSWORD", "Yamsteph2212")
-      default_mail = st.secrets.get("EMAIL_USER", "")
-      default_pwd = st.secrets.get("EMAIL_PASSWORD", "")
-      default_imap = st.secrets.get("EMAIL_IMAP", "imap.gmail.com")
-      c_auth.execute(
-          """INSERT INTO utilisateurs (email, password, date_fin_essai, est_admin, mail_perso, mail_password, mail_imap) 
-                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
-          (
-              "admin@omnirecrut.fr",
-              mdp_admin,
-              "2099-12-31",
-              1,
-              default_mail,
-              default_pwd,
-              default_imap,
-          ),
-      )
-      conn_auth.commit()
-    conn_auth.close()
-  except Exception as e:
-    st.error(f"Erreur d'initialisation du système d'authentification : {e}")
+        # Création de l'accès Admin par défaut si la table est vide
+        c_auth.execute("SELECT COUNT(*) FROM utilisateurs")
+        if c_auth.fetchone()[0] == 0:
+            mdp_admin = st.secrets.get("APP_PASSWORD", "Yamsteph2212")
+            default_mail = st.secrets.get("EMAIL_USER", "")
+            default_pwd = st.secrets.get("EMAIL_PASSWORD", "")
+            default_imap = st.secrets.get("EMAIL_IMAP", "imap.gmail.com")
+            c_auth.execute(
+                """INSERT INTO utilisateurs (email, password, date_fin_essai, est_admin, mail_perso, mail_password, mail_imap, nb_requetes_ia, quota_max, statut_abonnement) 
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "admin@omnirecrut.fr",
+                    mdp_admin,
+                    "2099-12-31",
+                    1,
+                    default_mail,
+                    default_pwd,
+                    default_imap,
+                    0,
+                    999999,
+                    "PRO"
+                ),
+            )
+            conn_auth.commit()
+        conn_auth.close()
+    except Exception as e:
+        st.error(f"Erreur d'initialisation du système d'authentification : {e}")
 
-  # Application du style CSS de l'écran de connexion
-  st.markdown(
-      """
+    # Style CSS écran de connexion
+    st.markdown(
+        """
         <style>
         .stApp { background-color: #1a202c; color: #e2e8f0; }
         label, [data-testid="stWidgetLabel"] p { color: #ffffff !important; font-weight: 600 !important; }
         .stTextInput>div>div>input { background-color: #2d3748 !important; color: #e2e8f0 !important; border: 1px solid #4a5568 !important; }
         </style>
     """,
-      unsafe_allow_html=True,
-  )
+        unsafe_allow_html=True,
+    )
 
-  if not st.session_state["password_correct"]:
-    st.markdown(
-        """
+    if not st.session_state["password_correct"]:
+        st.markdown(
+            """
             <div style="text-align: center; padding: 50px 0px 20px 0px;">
                 <h1 style="color: #ffb703 !important; font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 46px; font-weight: 700; letter-spacing: 2px; margin-bottom: 5px;">
                     OMNIRECRUT IA
@@ -212,90 +269,91 @@ def check_password():
                 <hr style="border-color: #4a5568; margin: 25px auto; width: 40%;">
             </div>
             """,
-        unsafe_allow_html=True,
-    )
+            unsafe_allow_html=True,
+        )
 
-    with st.form("form_login"):
-      email_saisi = st.text_input("Adresse e-mail :").strip().lower()
-      pwd_saisi = st.text_input("Mot de passe :", type="password")
-      btn_connexion = st.form_submit_button("Accéder à l'outil")
+        with st.form("form_login"):
+            email_saisi = st.text_input("Adresse e-mail :").strip().lower()
+            pwd_saisi = st.text_input("Mot de passe :", type="password")
+            btn_connexion = st.form_submit_button("Accéder à l'outil")
 
-      if btn_connexion:
-        if not email_saisi or not pwd_saisi:
-          st.error("Veuillez remplir votre e-mail et votre mot de passe.")
-        else:
-          try:
-            conn_chk = sqlite3.connect("recrutement_ia.db")
-            c_chk = conn_chk.cursor()
-            c_chk.execute(
-                "SELECT password, date_fin_essai, est_admin, mail_perso,"
-                " mail_password, mail_imap FROM utilisateurs WHERE email = ?",
-                (email_saisi,),
-            )
-            res = c_chk.fetchone()
-            conn_chk.close()
-
-            if res:
-              (
-                  db_password,
-                  db_date_fin,
-                  db_is_admin,
-                  m_perso,
-                  m_pass,
-                  m_imap,
-              ) = res
-              if pwd_saisi == db_password:
-                date_exp = datetime.date.fromisoformat(db_date_fin)
-                aujourdhui = datetime.date.today()
-
-                if db_is_admin == 1 or aujourdhui <= date_exp:
-                  st.session_state["password_correct"] = True
-                  st.session_state["user_email"] = email_saisi
-                  st.session_state["is_admin"] = (
-                      True if db_is_admin == 1 else False
-                  )
-
-                  # Chargement en mémoire de la configuration mail de l'utilisateur connecté
-                  st.session_state["user_config_email"] = {
-                      "email": m_perso if m_perso else email_saisi,
-                      "password": m_pass,
-                      "imap": m_imap if m_imap else "imap.gmail.com",
-                  }
-                  st.rerun()
+            if btn_connexion:
+                if not email_saisi or not pwd_saisi:
+                    st.error("Veuillez remplir votre e-mail et votre mot de passe.")
                 else:
-                  st.error(
-                      f"⏳ Votre période d'essai a expiré le"
-                      f" {date_exp.strftime('%d/%m/%Y')}. Contactez-nous pour"
-                      " renouveler votre accès."
-                  )
-              else:
-                st.error("Mot de passe incorrect.")
-            else:
-              st.error("Aucun compte associé à cet e-mail.")
-          except Exception as err:
-            st.error(f"Erreur technique de connexion : {err}")
+                    try:
+                        conn_chk = sqlite3.connect("recrutement_ia.db")
+                        c_chk = conn_chk.cursor()
+                        c_chk.execute(
+                            "SELECT password, date_fin_essai, est_admin, mail_perso,"
+                            " mail_password, mail_imap, statut_abonnement FROM utilisateurs WHERE email = ?",
+                            (email_saisi,),
+                        )
+                        res = c_chk.fetchone()
+                        conn_chk.close()
 
-    return False
-  return True
+                        if res:
+                            (
+                                db_password,
+                                db_date_fin,
+                                db_is_admin,
+                                m_perso,
+                                m_pass,
+                                m_imap,
+                                db_statut
+                            ) = res
+                            if pwd_saisi == db_password:
+                                date_exp = datetime.date.fromisoformat(db_date_fin)
+                                aujourdhui = datetime.date.today()
+
+                                if db_is_admin == 1 or aujourdhui <= date_exp:
+                                    st.session_state["password_correct"] = True
+                                    st.session_state["user_email"] = email_saisi
+                                    st.session_state["is_admin"] = True if db_is_admin == 1 else False
+                                    st.session_state["user_statut"] = db_statut if db_statut else "GRATUIT"
+
+                                    st.session_state["user_config_email"] = {
+                                        "email": m_perso if m_perso else email_saisi,
+                                        "password": m_pass,
+                                        "imap": m_imap if m_imap else "imap.gmail.com",
+                                    }
+                                    st.rerun()
+                                else:
+                                    st.error(
+                                        f"⏳ Votre période d'essai a expiré le"
+                                        f" {date_exp.strftime('%d/%m/%Y')}. Contactez-nous pour"
+                                        " renouveler votre accès."
+                                    )
+                            else:
+                                st.error("Mot de passe incorrect.")
+                        else:
+                            st.error("Aucun compte associé à cet e-mail.")
+                    except Exception as err:
+                        st.error(f"Erreur technique de connexion : {err}")
+
+        return False
+    return True
 
 
 # --- DÉMARRAGE DE L'APPLICATION ---
 if not check_password():
-  st.stop()
+    st.stop()
 
 # --- IMPORT SECURISÉ DU MODULE PDF ---
 try:
-  from reportlab.lib import colors
-  from reportlab.lib.enums import TA_CENTER, TA_LEFT
-  from reportlab.lib.pagesizes import letter
-  from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-  from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-  REPORTLAB_DISPO = True
+    REPORTLAB_DISPO = True
 except ModuleNotFoundError:
-  REPORTLAB_DISPO = False
+    REPORTLAB_DISPO = False
 
-# 1. CONNEXION ET CRÉATION DE LA BDD
+# ==============================================================================
+# 1. CONNEXION ET INITIALISATION DE LA BASE DE DONNÉES SQLite (définition de c)
+# ==============================================================================
 conn = sqlite3.connect(
     "recrutement_ia.db", check_same_thread=False, timeout=30, isolation_level=None
 )
@@ -307,29 +365,85 @@ c.execute("""CREATE TABLE IF NOT EXISTS candidats
              statut TEXT, categorie_ia TEXT, avis_ia TEXT, score_matching TEXT, secteur_metier TEXT DEFAULT 'Non spécifié', cv_texte TEXT DEFAULT '')""")
 
 try:
-  c.execute("ALTER TABLE candidats ADD COLUMN type_rdv TEXT")
-  c.execute("ALTER TABLE candidats ADD COLUMN date_rdv TEXT")
+    c.execute("ALTER TABLE candidats ADD COLUMN type_rdv TEXT")
+    c.execute("ALTER TABLE candidats ADD COLUMN date_rdv TEXT")
 except Exception:
-  pass
+    pass
 
 try:
-  c.execute("ALTER TABLE candidats ADD COLUMN cv_texte TEXT DEFAULT ''")
+    c.execute("ALTER TABLE candidats ADD COLUMN cv_texte TEXT DEFAULT ''")
 except Exception:
-  pass
+    pass
 
 c.execute("""CREATE TABLE IF NOT EXISTS clients 
              (id INTEGER PRIMARY KEY AUTOINCREMENT, entreprise TEXT, secteur TEXT, contact TEXT, 
              secteur_activite TEXT DEFAULT 'Non spécifié', tel TEXT, email TEXT, priorite TEXT, notes TEXT)""")
 
 try:
-  c.execute("SELECT secteur_geo FROM clients LIMIT 1")
+    c.execute("SELECT secteur_geo FROM clients LIMIT 1")
 except sqlite3.OperationalError:
-  try:
-    c.execute(
-        "ALTER TABLE clients ADD COLUMN secteur_geo TEXT DEFAULT 'Béziers'"
-    )
-  except sqlite3.OperationalError:
-    pass
+    try:
+        c.execute("ALTER TABLE clients ADD COLUMN secteur_geo TEXT DEFAULT 'Béziers'")
+    except sqlite3.OperationalError:
+        pass
+
+# ==============================================================================
+# 2. GESTION DU RETOUR DE PAIEMENT STRIPE (REDIRECTION DÉTECTÉE)
+# ==============================================================================
+query_params = st.query_params
+if query_params.get("payment") == "success":
+    user_email = st.session_state.get("user_email")
+    if user_email:
+        c.execute("UPDATE utilisateurs SET statut_abonnement = 'PRO', quota_max = 999999 WHERE email = ?", (user_email,))
+        st.session_state['user_statut'] = 'PRO'
+        st.balloons()
+        st.success("🎉 Félicitations ! Votre abonnement PRO Illimité est actif.")
+        st.query_params.clear()
+
+# ==============================================================================
+# 3. PANNEAU LATÉRAL (SIDEBAR) : QUOTAS & BOUTON STRIPE
+# ==============================================================================
+with st.sidebar:
+    st.markdown("<h3 style='color: #ffffff !important;'>⚙️ Mon Compte</h3>", unsafe_allow_html=True)
+    user_email = st.session_state.get("user_email", "")
+    
+    # Récupération de l'état du quota et du statut
+    c.execute("SELECT nb_requetes_ia, quota_max, statut_abonnement FROM utilisateurs WHERE email = ?", (user_email,))
+    res_u = c.fetchone()
+    
+    quota_utilise = res_u[0] if res_u and res_u[0] is not None else 0
+    quota_max = res_u[1] if res_u and res_u[1] is not None else 300
+    statut_abonnement = res_u[2] if res_u and res_u[2] is not None else "GRATUIT"
+    
+    # Lien Stripe (Remplace par ton propre lien Stripe Payment Link)
+    LIEN_STRIPE_CHECKOUT = "https://buy.stripe.com/test_cNi28rd0UfUW5xMdRFbsc00"
+    
+    if statut_abonnement == "PRO" or st.session_state.get("user_statut") == "PRO":
+        st.markdown("""
+            <div style="background-color: #2e7d32; padding: 12px; border-radius: 8px; text-align: center; color: white; font-weight: bold; margin-bottom: 15px;">
+                👑 COMPTE PRO ILLIMITÉ
+            </div>
+        """, unsafe_allow_html=True)
+    else:
+        # Affichage structuré du Quota puis du Bouton en dessous
+        st.markdown("<h5 style='color: #ffb703 !important; margin-bottom: 5px;'>📊 Quotas IA Mensuels</h5>", unsafe_allow_html=True)
+        
+        pct_utilise = min(1.0, quota_utilise / quota_max) if quota_max > 0 else 0.0
+        st.progress(pct_utilise)
+        
+        st.markdown(f"<p style='color: #e2e8f0; font-size: 14px; margin-top: 5px;'>Utilisation : <b>{quota_utilise} / {quota_max}</b> requêtes</p>", unsafe_allow_html=True)
+        
+        st.write("") # Petit espace visuel
+        
+        # Bouton d'abonnement Stripe placé strictement sous le quota
+        st.link_button(
+            "💳 S'abonner (Accès Illimité)", 
+            LIEN_STRIPE_CHECKOUT, 
+            type="primary", 
+            use_container_width=True
+        )
+        
+    st.markdown("---")
 
 # --- TABLES RH & ADMINISTRATIVES ---
 c.execute("""CREATE TABLE IF NOT EXISTS contrats (
@@ -481,45 +595,80 @@ serveur_imap = st.session_state["user_config_email"].get("imap", serveur_imap)
 
 st.sidebar.markdown("---")
 
-# --- PANNEAU D'ADMINISTRATION POUR CRÉER DES ACCÈS PROSPECTS ---
+# --- PANNEAU D'ADMINISTRATION POUR CRÉER ET GÉRER LES ACCÈS PROSPECTS ---
 if st.session_state.get("is_admin", False):
-  st.sidebar.subheader("👑 GESTION DES ACCÈS (ADMIN)")
-  with st.sidebar.expander("➕ Créer un accès Prospect"):
-    with st.form("form_nouveau_prospect"):
-      p_email = st.text_input("E-mail prospect :").strip().lower()
-      p_pwd = st.text_input("Mot de passe temporaire :")
-      p_jours = st.number_input(
-          "Durée de l'essai (jours) :", min_value=1, value=30
-      )
-      btn_creer = st.form_submit_button("Créer l'accès")
-
-      if btn_creer:
-        if p_email and p_pwd:
-          try:
-            date_fin_calc = (
-                datetime.date.today() + datetime.timedelta(days=p_jours)
-            ).isoformat()
-            conn_add = sqlite3.connect("recrutement_ia.db")
-            c_add = conn_add.cursor()
-            c_add.execute(
-                """INSERT INTO utilisateurs (email, password, date_fin_essai, est_admin)
-                                 VALUES (?, ?, ?, 0)""",
-                (p_email, p_pwd, date_fin_calc),
+    st.sidebar.subheader("👑 GESTION DES ACCÈS (ADMIN)")
+    
+    # --- 1. SOUS-MENU : CRÉATION DE COMPTE ---
+    with st.sidebar.expander("➕ Créer un accès Prospect"):
+        with st.form("form_nouveau_prospect"):
+            p_email = st.text_input("E-mail prospect :").strip().lower()
+            p_pwd = st.text_input("Mot de passe temporaire :")
+            p_jours = st.number_input(
+                "Durée de l'essai (jours) :", min_value=1, value=30
             )
-            conn_add.commit()
-            conn_add.close()
-            st.success(
-                f"Accès créé pour {p_email} jusqu'au"
-                f" {datetime.date.fromisoformat(date_fin_calc).strftime('%d/%m/%Y')} !"
-            )
-          except sqlite3.IntegrityError:
-            st.error("Cet e-mail possède déjà un compte.")
-          except Exception as e_adm:
-            st.error(f"Erreur : {e_adm}")
-        else:
-          st.error("Champs manquants.")
+            btn_creer = st.form_submit_button("Créer l'accès")
 
-  st.sidebar.markdown("---")
+            if btn_creer:
+                if p_email and p_pwd:
+                    try:
+                        date_fin_calc = (
+                            datetime.date.today() + datetime.timedelta(days=p_jours)
+                        ).isoformat()
+                        conn_add = sqlite3.connect("recrutement_ia.db")
+                        c_add = conn_add.cursor()
+                        c_add.execute(
+                            """INSERT INTO utilisateurs (email, password, date_fin_essai, est_admin, nb_requetes_ia)
+                               VALUES (?, ?, ?, 0, 0)""",
+                            (p_email, p_pwd, date_fin_calc),
+                        )
+                        conn_add.commit()
+                        conn_add.close()
+                        st.success(
+                            f"Accès créé pour {p_email} jusqu'au"
+                            f" {datetime.date.fromisoformat(date_fin_calc).strftime('%d/%m/%Y')} !"
+                        )
+                    except sqlite3.IntegrityError:
+                        st.error("Cet e-mail possède déjà un compte.")
+                    except Exception as e_adm:
+                        st.error(f"Erreur : {e_adm}")
+                else:
+                    st.error("Champs manquants.")
+
+    # --- 2. SOUS-MENU : SUIVI & RÉINITIALISATION DES QUOTAS IA ---
+    with st.sidebar.expander("📊 Quotas IA & Remise à 0"):
+        try:
+            conn_q = sqlite3.connect("recrutement_ia.db")
+            c_q = conn_q.cursor()
+            c_q.execute("SELECT email, COALESCE(nb_requetes_ia, 0) FROM utilisateurs WHERE est_admin = 0")
+            prospects_data = c_q.fetchall()
+            conn_q.close()
+
+            if prospects_data:
+                # Affichage de la consommation de chaque prospect
+                for email_p, nb_p in prospects_data:
+                    st.caption(f"👤 **{email_p}** : {nb_p} / {LIMITE_REQUETES_IA} requêtes")
+
+                st.markdown("---")
+                
+                # Formulaire de réinitialisation
+                liste_emails = [p[0] for p in prospects_data]
+                target_user = st.selectbox("Réinitialiser l'utilisateur :", liste_emails, key="sb_reset_quota_sb")
+                
+                if st.button("🔄 Remettre le quota à 0", key="btn_reset_quota_sb"):
+                    conn_res = sqlite3.connect("recrutement_ia.db")
+                    c_res = conn_res.cursor()
+                    c_res.execute("UPDATE utilisateurs SET nb_requetes_ia = 0 WHERE email = ?", (target_user,))
+                    conn_res.commit()
+                    conn_res.close()
+                    st.success(f"Quota réinitialisé pour {target_user} !")
+                    st.rerun()
+            else:
+                st.info("Aucun prospect enregistré.")
+        except Exception as e_quota:
+            st.error(f"Erreur quota : {e_quota}")
+
+    st.sidebar.markdown("---")
 
 options_menu = [
     "🗃️ VIVIER DE CANDIDATS", 
@@ -754,7 +903,10 @@ elif st.session_state['page_active'] == "🎯 MATCHING IA OFFRES & CV":
     with col_cvs: fichiers_cv = st.file_uploader("Sélectionnez un ou plusieurs CV (Format PDF)", type=["pdf"], accept_multiple_files=True)
 
     if st.button("🚀 LANCER LE MATCHING INTELLIGENT"):
-        if not texte_offre or not fichiers_cv: st.error("⚠️ Offre ou CV manquant.")
+        if not texte_offre or not fichiers_cv: 
+            st.error("⚠️ Offre ou CV manquant.")
+        elif not peut_utiliser_ia(st.session_state.get("user_email")):
+            st.error("⚠️ Vous avez atteint votre quota mensuel de 300 requêtes IA. Contactez l'administrateur pour débloquer votre accès.")
         else:
             model = genai.GenerativeModel("gemini-2.5-flash")
             resultats_matching = []
@@ -799,6 +951,10 @@ elif st.session_state['page_active'] == "🎯 MATCHING IA OFFRES & CV":
                         "justification": data.get("justification", "Pas d'avis"), 
                         "cv_texte": texte_cv
                     })
+
+                    # Incrémentation du compteur (+1 par CV traité)
+                    incrémenter_quota_ia(st.session_state.get("user_email"))
+
                 except Exception as e: 
                     st.error(f"Erreur fichier {fichier.name} : {e}")
                     
@@ -965,17 +1121,23 @@ elif st.session_state["page_active"] == "🏢 PORTEFEUILLE CLIENTS":
       st.error(f"Erreur : {e}")
 
 # --- ONGLET 4 : RÉDACTION ANNONCES IA (COMPLÉTÉ) ---
-elif st.session_state['page_active'] == "✍️ RÉDACTION ANNONCES IA":
+elif st.session_state['page_active'] in ["✍️ RÉDACTION ANNONCES IA", "🚨 RÉDACTION ANNONCES IA", "📝 RÉDACTION ANNONCES IA"]:
     st.header("✍️ Assistant de Rédaction d'Annonce Évolué")
+    
+    # 1. Chargement de la liste des clients existants
     try:
         c.execute("SELECT entreprise, secteur_activite FROM clients ORDER BY entreprise ASC")
         clients_existants = c.fetchall()
-        options_clients = ["-- Choisir un client existant --"] + [f"{cl[0]} ({cl[1]})" for cl in clients_existants]
+        options_clients = [
+            "-- Choisir un client existant --", 
+            "➕ Autre / Nouvelle entreprise (Saisie manuelle)"
+        ] + [f"{cl[0]} ({cl[1]})" for cl in clients_existants]
     except Exception: 
-        options_clients = ["-- Choisir un client existant --"]
+        options_clients = ["-- Choisir un client existant --", "➕ Autre / Nouvelle entreprise (Saisie manuelle)"]
 
     client_selectionne = st.selectbox("Sélectionner l'entreprise pour l'offre :", options_clients, key="client_select_offre")
     
+    # Réinitialisation du cache si le choix de l'entreprise change
     if 'ancien_client_selectionne' not in st.session_state: 
         st.session_state['ancien_client_selectionne'] = client_selectionne
         
@@ -986,45 +1148,74 @@ elif st.session_state['page_active'] == "✍️ RÉDACTION ANNONCES IA":
         
     entreprise_cible = ""
     ville_cible = "Béziers"
-    if client_selectionne != "-- Choisir un client existant --":
+
+    # 2. Gestion de la saisie manuelle vs Sélecteur automatique
+    if client_selectionne == "➕ Autre / Nouvelle entreprise (Saisie manuelle)":
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            entreprise_cible = st.text_input("🏢 Nom de l'entreprise :", placeholder="Ex: Restaurant Le Globe...")
+        with col_m2:
+            ville_cible = st.text_input("📍 Ville de l'offre :", value="Béziers", placeholder="Ex: Pézenas, Béziers...")
+    
+    elif client_selectionne != "-- Choisir un client existant --":
         entreprise_cible = client_selectionne.split(" (")[0]
         try:
             c.execute("SELECT secteur FROM clients WHERE entreprise=?", (entreprise_cible,))
             res_ville = c.fetchone()
-            if res_ville: ville_cible = res_ville[0]
-        except Exception: pass
+            if res_ville and res_ville[0]: 
+                ville_cible = res_ville[0]
+        except Exception: 
+            pass
         st.caption(f"✨ Client actif : **{entreprise_cible}** basé à **{ville_cible}**")
 
+    # 3. Champs du poste et compétences
     col_form1, col_form2 = st.columns(2)
-    with col_form1: poste = st.text_input("Intitulé exact du poste recherché :", placeholder="Ex: Second de cuisine...")
-    with col_form2: competences_requises = st.text_area("Pré-requis, diplômes et compétences clés :", placeholder="Ex: Maîtrise HACCP...")
+    with col_form1: 
+        poste = st.text_input("Intitulé exact du poste recherché :", placeholder="Ex: Second de cuisine...")
+    with col_form2: 
+        competences_requises = st.text_area("Pré-requis, diplômes et compétences clés :", placeholder="Ex: Maîtrise HACCP...")
         
-    if st.button("✨ GÉNÉRER L'OFFRE PAR L'IA"):
-        if not poste: st.error("⚠️ Indiquez l'intitulé du poste.")
+    # 4. Génération par l'IA Gemini
+    if st.button("✨ GÉNÉRER L'OFFRE PAR L'IA", type="primary", use_container_width=True):
+        if not poste: 
+            st.error("⚠️ Indiquez l'intitulé du poste.")
         else:
-            st.info("🧠 Rédaction de l'offre en cours...")
-            try:
-                nom_ent_texte = f"pour l'entreprise {entreprise_cible}" if entreprise_cible else ""
-                model = genai.GenerativeModel("gemini-2.0-flash")
-                prompt = f"Rédige une offre d'emploi détaillée et attractive en français pour le poste de {poste} à {ville_cible} {nom_ent_texte}. Pré-requis : {competences_requises}. Structure claire avec Profil, Missions, Avantages."
-                response = model.generate_content(prompt)
-                st.session_state['derniere_offre_generee'] = response.text
-            except Exception as e: st.error(f"Erreur IA : {e}")
+            # Vérification du quota IA
+            if not peut_utiliser_ia(st.session_state.get("user_email")):
+                st.error("⚠️ Vous avez atteint votre quota mensuel de 300 requêtes IA. Contactez l'administrateur pour débloquer votre accès.")
+            else:
+                st.info("🧠 Rédaction de l'offre en cours...")
+                try:
+                    nom_ent_texte = f"pour l'entreprise {entreprise_cible}" if entreprise_cible else ""
+                    model = genai.GenerativeModel("gemini-2.5-flash")
+                    prompt = f"Rédige une offre d'emploi détaillée et attractive en français pour le poste de {poste} à {ville_cible} {nom_ent_texte}. Pré-requis : {competences_requises}. Structure claire avec Profil, Missions, Avantages."
+                    response = model.generate_content(prompt)
+                    st.session_state['derniere_offre_generee'] = response.text
+                    
+                    # Décompte du quota (+1)
+                    incrémenter_quota_ia(st.session_state.get("user_email"))
+                    st.rerun()
 
+                except Exception as e: 
+                    st.error(f"Erreur IA : {e}")
+
+    # 5. Affichage et exports de l'offre générée
     if 'derniere_offre_generee' in st.session_state and st.session_state['derniere_offre_generee']:
         st.markdown("---")
         col_t, col_b = st.columns([3, 1])
-        with col_t: st.markdown("### 📋 Annonce rédigée par l'IA :")
+        with col_t: 
+            st.markdown("### 📋 Annonce rédigée par l'IA :")
         with col_b:
             if st.button("🗑️ Effacer l'offre", use_container_width=True):
                 st.session_state['derniere_offre_generee'] = ""
                 st.rerun()
+                
         st.markdown(f'<div style="background-color: #2d3748; padding: 20px; border-radius: 8px; border: 1px solid #4a5568; margin-bottom: 20px; color: white; white-space: pre-wrap;">{st.session_state["derniere_offre_generee"]}</div>', unsafe_allow_html=True)
 
         col_action1, col_action2, col_action3, col_action4 = st.columns(4)
         with col_action1:
             html_export = f"<html><body><h1>Offre : {poste}</h1><pre>{st.session_state['derniere_offre_generee']}</pre></body></html>"
-            st.download_button(label="📄 EXPORTER HTML", data=html_export, file_name="offre.html", mime="text/html", use_container_width=True)
+            st.download_button(label="📄 EXPORTER HTML", data=html_export, file_name=f"Offre_{poste}.html", mime="text/html", use_container_width=True)
         with col_action2:
             if st.button("📄 EXPORTER PDF", use_container_width=True):
                 chemin = creer_pdf_annonce(poste if poste else "Offre", st.session_state['derniere_offre_generee'])
@@ -1042,6 +1233,93 @@ elif st.session_state['page_active'] == "✍️ RÉDACTION ANNONCES IA":
                 st.session_state['page_active'] = "🏹 SOURCING EXTERNE & CHASSE"
                 st.rerun()
 
+# --- 🤝 ONGLET : MATCHING & OPPORTUNITÉS (COMPLÉTÉ AVEC QUOTAS IA) ---
+elif st.session_state['page_active'] == "🤝 MATCHING & OPPORTUNITÉS":
+    st.header("🎯 Intelligence de Matching & Opportunités")
+    tab_classique, tab_inverse = st.tabs(["📋 Matching Classique (Besoins vs Candidats)", "🚀 Matching Inversé (Placement Proactif)"])
+    
+    with tab_classique:
+        st.subheader("🤝 Matching IA : Candidats vs Besoins")
+        col_besoin, col_vivier = st.columns(2)
+        with col_besoin:
+            secteur_besoin = st.selectbox("Secteur métier :", LISTE_SECTEURS, key="secteur_match")
+            besoin_details = st.text_area("Détails du poste recherchés :", height=150, key="details_match_text")
+            
+        with col_vivier:
+            if st.button("🚀 LANCER LE MATCHING", type="primary", use_container_width=True):
+                # 1. Vérification du quota IA
+                if not peut_utiliser_ia(st.session_state.get("user_email")):
+                    st.error("⚠️ Vous avez atteint votre quota mensuel de 300 requêtes IA. Contactez l'administrateur pour débloquer votre accès.")
+                else:
+                    c.execute("SELECT nom, poste, competences FROM candidats WHERE secteur_metier = ?", (secteur_besoin,))
+                    candidats_db = c.fetchall()
+                    if not candidats_db: 
+                        st.warning("Aucun candidat trouvé.")
+                    else:
+                        data_candidats = [{"nom": cand[0], "poste": cand[1], "competences": cand[2]} for cand in candidats_db]
+                        try:
+                            model = genai.GenerativeModel("gemini-2.5-flash")
+                            prompt = f"Compare ces candidats au besoin : '{besoin_details}'. Renvoie UN TABLEAU JSON avec uniquement : 'nom', 'score', 'raison'. Liste : {data_candidats}"
+                            response = model.generate_content(prompt)
+                            txt = response.text.strip()
+                            if "[" in txt: txt = txt[txt.find("[") : txt.rfind("]")+1]
+                            
+                            st.session_state["resultat_match_classique"] = json.loads(txt)
+                            
+                            # Incrémentation du quota (+1)
+                            incrémenter_quota_ia(st.session_state.get("user_email"))
+
+                        except Exception as e: 
+                            st.error(f"Erreur IA : {e}")
+
+            if "resultat_match_classique" in st.session_state:
+                df_res = pd.DataFrame(st.session_state["resultat_match_classique"])
+                st.dataframe(df_res, use_container_width=True, hide_index=True)
+
+    with tab_inverse:
+        st.markdown('<h3 style="color: #f6ad55;">💎 Placement Proactif de Pépites</h3>', unsafe_allow_html=True)
+        try:
+            c.execute("SELECT nom FROM candidats ORDER BY nom ASC")
+            liste_candidats_inv = [row[0] for row in c.fetchall()]
+        except Exception: 
+            liste_candidats_inv = []
+
+        candidat_pepite = st.selectbox("💎 Sélectionner la pépite à placer :", ["-- Choisir un candidat --"] + liste_candidats_inv)
+        if candidat_pepite != "-- Choisir un candidat --":
+            c.execute("SELECT poste, competences, cv_texte FROM candidats WHERE nom = ?", (candidat_pepite,))
+            res_cand = c.fetchone()
+            if res_cand:
+                poste_cand, comp_cand, cv_cand = res_cand[0], res_cand[1], res_cand[2]
+                st.info(f"🎯 Profil : {poste_cand} | Compétences : {comp_cand}")
+                
+                try:
+                    c.execute("SELECT entreprise, secteur, secteur_activite FROM clients")
+                    donnees_clients_inv = c.fetchall()
+                    liste_entreprises_texte = "\n".join([f"- {r[0]} ({r[2]} - {r[1]})" for r in donnees_clients_inv])
+                except Exception: 
+                    liste_entreprises_texte = ""
+
+                if st.button("🧠 Générer la stratégie de Placement Proactif", type="primary", use_container_width=True):
+                    # 1. Vérification du quota IA
+                    if not peut_utiliser_ia(st.session_state.get("user_email")):
+                        st.error("⚠️ Vous avez atteint votre quota mensuel de 300 requêtes IA. Contactez l'administrateur pour débloquer votre accès.")
+                    else:
+                        try:
+                            model = genai.GenerativeModel("gemini-2.5-flash")
+                            prompt_inverse = f"Analyse le profil du candidat ({poste_cand}, {comp_cand}) par rapport à notre portefeuille clients :\n{liste_entreprises_texte}\nIdentifie les meilleures cibles et rédige un pitch d'accroche commercial anonymisé percutant."
+                            response_inverse = model.generate_content(prompt_inverse)
+                            
+                            st.session_state["resultat_matching_inverse"] = response_inverse.text
+                            
+                            # Incrémentation du quota (+1)
+                            incrémenter_quota_ia(st.session_state.get("user_email"))
+
+                        except Exception as e_inv:
+                            st.error(f"Erreur IA : {e_inv}")
+
+                if "resultat_matching_inverse" in st.session_state:
+                    st.markdown(f'<div style="background-color: #1e1e24; padding:20px; border-radius:8px; color:white; white-space:pre-wrap;">{st.session_state["resultat_matching_inverse"]}</div>', unsafe_allow_html=True)
+
 # --- 🖥️ ONGLET : TRI & CLASSEMENT IA ---
 elif st.session_state['page_active'] == "🖥️ TRI & CLASSEMENT IA":
     st.header("🖥️ Tri de Masse & Sourcing Automatique")
@@ -1056,35 +1334,47 @@ elif st.session_state['page_active'] == "🖥️ TRI & CLASSEMENT IA":
             critere_important = st.text_input("Exigence ou mot-clé prioritaire :", placeholder="Ex: Permis B...")
 
             if st.button("🚀 LANCER LE TRI DE MASSE"):
-                st.info("🧠 L'IA analyse les documents... Patientez.")
-                try:
-                    donnees_analyse = []
-                    for f in fichiers_tri:
-                        if f.name.endswith('.pdf'):
-                            reader = PdfReader(f)
-                            texte = "".join([page.extract_text() for page in reader.pages if page.extract_text()])
-                        else:
-                            df_temp = pd.read_csv(f) if f.name.endswith('.csv') else pd.read_excel(f)
-                            texte = df_temp.to_string()
-                        donnees_analyse.append({"nom_fichier": f.name, "contenu": texte})
+                # Vérification du quota IA
+                if not peut_utiliser_ia(st.session_state.get("user_email")):
+                    st.error("⚠️ Vous avez atteint votre quota mensuel de 300 requêtes IA. Contactez l'administrateur pour débloquer votre accès.")
+                else:
+                    st.info("🧠 L'IA analyse les documents... Patientez.")
+                    try:
+                        donnees_analyse = []
+                        for f in fichiers_tri:
+                            if f.name.endswith('.pdf'):
+                                reader = PdfReader(f)
+                                texte = "".join([page.extract_text() for page in reader.pages if page.extract_text()])
+                            else:
+                                df_temp = pd.read_csv(f) if f.name.endswith('.csv') else pd.read_excel(f)
+                                texte = df_temp.to_string()
+                            donnees_analyse.append({"nom_fichier": f.name, "contenu": texte})
 
-                    model = genai.GenerativeModel("gemini-2.5-flash")
-                    prompt = f"Analyse cette liste par rapport au secteur '{secteur_cible_tri}' et le critère '{critere_important}'. Renvoie un tableau JSON avec : 'nom', 'poste_approprie', 'score_tri', 'points_forts'."
-                    response = model.generate_content(prompt)
-                    txt_clean = response.text.strip().replace("```json", "").replace("```", "").strip()
-                    st.dataframe(pd.DataFrame(json.loads(txt_clean)), use_container_width=True)
-                except Exception as e: st.error(f"Erreur de traitement : {e}")
+                        model = genai.GenerativeModel("gemini-2.5-flash")
+                        prompt = f"Analyse cette liste par rapport au secteur '{secteur_cible_tri}' et le critère '{critere_important}'. Renvoie un tableau JSON avec : 'nom', 'poste_approprie', 'score_tri', 'points_forts'."
+                        response = model.generate_content(prompt)
+                        txt_clean = response.text.strip().replace("```json", "").replace("```", "").strip()
+                        st.dataframe(pd.DataFrame(json.loads(txt_clean)), use_container_width=True)
+
+                        # Décompte du quota (1 crédit par fichier analysé)
+                        user_email_actuel = st.session_state.get("user_email")
+                        for _ in range(len(fichiers_tri)):
+                            incrémenter_quota_ia(user_email_actuel)
+
+                    except Exception as e: 
+                        st.error(f"Erreur de traitement : {e}")
 
     with col_droite:
         st.subheader("✉️ Récupération de CV par E-mail")
         if st.button("📥 RELEVER LES E-MAILS DE SOURCING", use_container_width=True):
-            if not email_utilisateur or not password_email: st.error("⚠️ Identifiants manquants.")
+            if not email_utilisateur or not password_email: 
+                st.error("⚠️ Identifiants manquants.")
             else:
                 fichier_recupere = relever_et_analyser_emails(email_utilisateur, password_email, serveur_imap)
-                if fichier_recupere: st.success(f"📎 Nouveau CV PDF récupéré : {os.path.basename(fichier_recupere)}")
-                else: st.info("📬 Aucun nouveau message non lu avec pièce jointe PDF trouvé.")
-
-# --- 🤝 ONGLET : MATCHING & OPPORTUNITÉS ---
+                if fichier_recupere: 
+                    st.success(f"📎 Nouveau CV PDF récupéré : {os.path.basename(fichier_recupere)}")
+                else: 
+                    st.info("📬 Aucun nouveau message non lu avec pièce jointe PDF trouvé.")# --- 🤝 ONGLET : MATCHING & OPPORTUNITÉS (COMPLÉTÉ AVEC QUOTAS IA) ---
 elif st.session_state['page_active'] == "🤝 MATCHING & OPPORTUNITÉS":
     st.header("🎯 Intelligence de Matching & Opportunités")
     tab_classique, tab_inverse = st.tabs(["📋 Matching Classique (Besoins vs Candidats)", "🚀 Matching Inversé (Placement Proactif)"])
@@ -1098,30 +1388,42 @@ elif st.session_state['page_active'] == "🤝 MATCHING & OPPORTUNITÉS":
             
         with col_vivier:
             if st.button("🚀 LANCER LE MATCHING", type="primary", use_container_width=True):
-                c.execute("SELECT nom, poste, competences FROM candidats WHERE secteur_metier = ?", (secteur_besoin,))
-                candidats_db = c.fetchall()
-                if not candidats_db: st.warning("Aucun candidat trouvé.")
+                # 1. Vérification du quota IA
+                if not peut_utiliser_ia(st.session_state.get("user_email")):
+                    st.error("⚠️ Vous avez atteint votre quota mensuel de 300 requêtes IA. Contactez l'administrateur pour débloquer votre accès.")
                 else:
-                    data_candidats = [{"nom": cand[0], "poste": cand[1], "competences": cand[2]} for cand in candidats_db]
-                    try:
-                        model = genai.GenerativeModel("gemini-2.5-flash")
-                        prompt = f"Compare ces candidats au besoin : '{besoin_details}'. Renvoie UN TABLEAU JSON avec uniquement : 'nom', 'score', 'raison'. Liste : {data_candidats}"
-                        response = model.generate_content(prompt)
-                        txt = response.text.strip()
-                        if "[" in txt: txt = txt[txt.find("[") : txt.rfind("]")+1]
-                        st.session_state["resultat_match_classique"] = json.loads(txt)
-                    except Exception as e: st.error(f"Erreur IA : {e}")
+                    c.execute("SELECT nom, poste, competences FROM candidats WHERE secteur_metier = ?", (secteur_besoin,))
+                    candidats_db = c.fetchall()
+                    if not candidats_db: 
+                        st.warning("Aucun candidat trouvé.")
+                    else:
+                        data_candidats = [{"nom": cand[0], "poste": cand[1], "competences": cand[2]} for cand in candidats_db]
+                        try:
+                            model = genai.GenerativeModel("gemini-2.5-flash")
+                            prompt = f"Compare ces candidats au besoin : '{besoin_details}'. Renvoie UN TABLEAU JSON avec uniquement : 'nom', 'score', 'raison'. Liste : {data_candidats}"
+                            response = model.generate_content(prompt)
+                            txt = response.text.strip()
+                            if "[" in txt: txt = txt[txt.find("[") : txt.rfind("]")+1]
+                            
+                            st.session_state["resultat_match_classique"] = json.loads(txt)
+                            
+                            # Incrémentation du quota (+1) sans rerun prématuré
+                            incrémenter_quota_ia(st.session_state.get("user_email"))
+
+                        except Exception as e: 
+                            st.error(f"Erreur IA : {e}")
 
             if "resultat_match_classique" in st.session_state:
                 df_res = pd.DataFrame(st.session_state["resultat_match_classique"])
                 st.dataframe(df_res, use_container_width=True, hide_index=True)
 
     with tab_inverse:
-        st.markdown('<h3 style="color: #f6ad55;">💎 Placement Proactive de Pépites</h3>', unsafe_allow_html=True)
+        st.markdown('<h3 style="color: #f6ad55;">💎 Placement Proactif de Pépites</h3>', unsafe_allow_html=True)
         try:
             c.execute("SELECT nom FROM candidats ORDER BY nom ASC")
             liste_candidats_inv = [row[0] for row in c.fetchall()]
-        except Exception: liste_candidats_inv = []
+        except Exception: 
+            liste_candidats_inv = []
 
         candidat_pepite = st.selectbox("💎 Sélectionner la pépite à placer :", ["-- Choisir un candidat --"] + liste_candidats_inv)
         if candidat_pepite != "-- Choisir un candidat --":
@@ -1135,17 +1437,30 @@ elif st.session_state['page_active'] == "🤝 MATCHING & OPPORTUNITÉS":
                     c.execute("SELECT entreprise, secteur, secteur_activite FROM clients")
                     donnees_clients_inv = c.fetchall()
                     liste_entreprises_texte = "\n".join([f"- {r[0]} ({r[2]} - {r[1]})" for r in donnees_clients_inv])
-                except Exception: liste_entreprises_texte = ""
+                except Exception: 
+                    liste_entreprises_texte = ""
 
                 if st.button("🧠 Générer la stratégie de Placement Proactif", type="primary", use_container_width=True):
-                    model = genai.GenerativeModel("gemini-2.5-flash")
-                    prompt_inverse = f"Analyse le profil du candidat ({poste_cand}, {comp_cand}) par rapport à notre portefeuille clients :\n{liste_entreprises_texte}\nIdentifie les meilleures cibles et rédige un pitch d'accroche commercial anonymisé percutant."
-                    response_inverse = model.generate_content(prompt_inverse)
-                    st.session_state["resultat_matching_inverse"] = response_inverse.text
+                    # 1. Vérification du quota IA
+                    if not peut_utiliser_ia(st.session_state.get("user_email")):
+                        st.error("⚠️ Vous avez atteint votre quota mensuel de 300 requêtes IA. Contactez l'administrateur pour débloquer votre accès.")
+                    else:
+                        try:
+                            model = genai.GenerativeModel("gemini-2.5-flash")
+                            prompt_inverse = f"Analyse le profil du candidat ({poste_cand}, {comp_cand}) par rapport à notre portefeuille clients :\n{liste_entreprises_texte}\nIdentifie les meilleures cibles et rédige un pitch d'accroche commercial anonymisé percutant."
+                            response_inverse = model.generate_content(prompt_inverse)
+                            
+                            st.session_state["resultat_matching_inverse"] = response_inverse.text
+                            
+                            # Incrémentation du quota (+1)
+                            incrémenter_quota_ia(st.session_state.get("user_email"))
+
+                        except Exception as e_inv:
+                            st.error(f"Erreur IA : {e_inv}")
 
                 if "resultat_matching_inverse" in st.session_state:
                     st.markdown(f'<div style="background-color: #1e1e24; padding:20px; border-radius:8px; color:white; white-space:pre-wrap;">{st.session_state["resultat_matching_inverse"]}</div>', unsafe_allow_html=True)
-
+                    
  # --- 📊 ONGLET : PIPELINE DE RECRUTEMENT ---
 elif st.session_state['page_active'] == "📊 PIPELINE DE RECRUTEMENT":
     st.title("📊 PIPELINE DE RECRUTEMENT")
@@ -1301,12 +1616,31 @@ elif st.session_state['page_active'] == "🏹 SOURCING EXTERNE & CHASSE":
     ville_recherche = st.text_input("Localisation :", value=st.session_state.get('sourcing_ville_cible', ''))
     mots_cles = st.text_input("Mots-clés (séparés par des virgules) :")
     
+    # Bouton IA optionnel pour affiner la chaîne booléenne si besoin
+    if st.button("🧠 GÉNERER CHAÎNE BOOLÉENNE PAR IA", use_container_width=True):
+        if not peut_utiliser_ia(st.session_state.get("user_email")):
+            st.error("⚠️ Vous avez atteint votre quota mensuel de 300 requêtes IA. Contactez l'administrateur pour débloquer votre accès.")
+        else:
+            try:
+                model = genai.GenerativeModel("gemini-2.5-flash")
+                prompt_bool = f"Génère une chaîne de recherche booléenne optimisée pour Google X-Ray pour le poste '{poste_recherche}' à '{ville_recherche}' avec ces mots clés '{mots_cles}'."
+                resp_bool = model.generate_content(prompt_bool)
+                st.session_state["chaine_booleenne_ia"] = resp_bool.text
+                
+                # Décompte du quota (+1)
+                incrémenter_quota_ia(st.session_state.get("user_email"))
+            except Exception as e:
+                st.error(f"Erreur IA : {e}")
+
+    if "chaine_booleenne_ia" in st.session_state:
+        st.info(f"💡 Suggestion d'optimisation IA : {st.session_state['chaine_booleenne_ia']}")
+
     # 3. Traitement et Génération des URLs
     if poste_recherche:
         poste_nettoye = poste_recherche.replace("/", " ").replace("(", "").replace(")", "").strip()
         loc_str = f'"{ville_recherche.strip()}"' if ville_recherche else ''
         
-       # --- 1. REQUÊTE LINKEDIN ---
+        # --- 1. REQUÊTE LINKEDIN ---
         criteres_li = f'"{poste_nettoye}"'
         if loc_str: 
             criteres_li += f' {loc_str}'
@@ -1325,7 +1659,7 @@ elif st.session_state['page_active'] == "🏹 SOURCING EXTERNE & CHASSE":
         query_cv_web = f'(site:doyoubuzz.com OR filetype:pdf) "{poste_nettoye}" {loc_str} "CV" -inurl:jobs -intitle:offre'
         url_cv_web = f"https://www.google.com/search?q={urllib.parse.quote(query_cv_web)}"
         
-        # 4. Affichage des 3 Boutons d'Action
+ # 4. Affichage des 3 Boutons d'Action
         st.write("") 
         col_btn1, col_btn2, col_btn3 = st.columns(3)
         
@@ -1334,7 +1668,7 @@ elif st.session_state['page_active'] == "🏹 SOURCING EXTERNE & CHASSE":
         with col_btn2:
             st.link_button("👥 FACEBOOK (Groupes Emploi)", url_facebook, use_container_width=True, type="secondary")
         with col_btn3:
-            st.link_button("📄 CV WEB & DOYOUBUZZ (PDF)", url_cv_web, use_container_width=True, type="secondary")
+            st.link_button("📄 CV WEB & DOYOUBUZZ (PDF)", url_cv_web, use_container_width=True)
 
 # --- 📋 ONGLET : GESTION ADMINISTRATIVE & RH ---
 elif st.session_state['page_active'] == "📋 GESTION ADMINISTRATIVE & RH":
@@ -1381,10 +1715,9 @@ elif st.session_state['page_active'] == "📋 GESTION ADMINISTRATIVE & RH":
     except Exception:
         list_cli = []
         
-# ==============================================================================
-# SOUS-ONGLET 1 : ÉDITION DE CONTRAT & CCN (VERSION SÉCURISÉE)
-# ==============================================================================
-if st.session_state['page_active'] == "📋 GESTION ADMINISTRATIVE & RH":
+    # ==============================================================================
+    # SOUS-ONGLET 1 : ÉDITION DE CONTRAT & CCN (VERSION SÉCURISÉE)
+    # ==============================================================================
     with ss_onglet1:
         st.markdown('<h3 style="color: white; margin-top: 10px;">📝 Génération Assistée du Contrat de Travail</h3>', unsafe_allow_html=True)
         
@@ -1457,7 +1790,7 @@ Le contrat prévoit une période d'essai de {periode_essai} jours.
 Le salarié déclare avoir pris connaissance des dispositions de la {ccn_detectee}.
 
 Fait à Béziers, le {date_embauche.strftime('%d/%m/%Y')}.
-Signature de l'employeur                Signature du salarié
+Signature de l'employeur                 Signature du salarié
                 """
                 pdf.multi_cell(0, 7, contenu)
                 
@@ -1472,9 +1805,10 @@ Signature de l'employeur                Signature du salarié
                     mime="application/pdf"
                 )
                 st.success("✅ Contrat enregistré et PDF généré !")
-# ====================================================
-            # SOUS-ONGLET 2 : SUIVI MÉDECINE DU TRAVAIL
-            # ====================================================
+
+    # ====================================================
+    # SOUS-ONGLET 2 : SUIVI MÉDECINE DU TRAVAIL
+    # ====================================================
     with ss_onglet2:
         st.markdown('<h3 style="color: white; margin-top: 10px;">🩺 Registre Interactif de la Médecine du Travail</h3>', unsafe_allow_html=True)
         
@@ -1543,18 +1877,25 @@ Signature de l'employeur                Signature du salarié
                     st.markdown("##### 🤖 Assistant d'Analyse Réglementaire (Gemini)")
                     
                     if st.button("🧠 Interroger Gemini sur les risques du poste", use_container_width=True):
-                        c.execute("SELECT poste FROM candidats WHERE nom = ?", (candidat_selectionne_filtre,))
-                        p_res = c.fetchone()
-                        poste_contexte = p_res[0] if p_res else "Général"
-                        
-                        with st.spinner("Analyse réglementaire en cours..."):
-                            try:
-                                model = genai.GenerativeModel("gemini-2.5-flash")
-                                prompt_med = f"Donne sous forme de puces courtes les 2 principales obligations de sécurité/EPI pour un poste de {poste_contexte}."
-                                response_med = model.generate_content(prompt_med)
-                                st.session_state["proposition_ia_med"] = response_med.text
-                            except Exception as e:
-                                st.error(f"Erreur IA : {e}")
+                        # Vérification Quota IA
+                        if not peut_utiliser_ia(st.session_state.get("user_email")):
+                            st.error("⚠️ Vous avez atteint votre quota mensuel de 300 requêtes IA. Contactez l'administrateur pour débloquer votre accès.")
+                        else:
+                            c.execute("SELECT poste FROM candidats WHERE nom = ?", (candidat_selectionne_filtre,))
+                            p_res = c.fetchone()
+                            poste_contexte = p_res[0] if p_res else "Général"
+                            
+                            with st.spinner("Analyse réglementaire en cours..."):
+                                try:
+                                    model = genai.GenerativeModel("gemini-2.5-flash")
+                                    prompt_med = f"Donne sous forme de puces courtes les 2 principales obligations de sécurité/EPI pour un poste de {poste_contexte}."
+                                    response_med = model.generate_content(prompt_med)
+                                    st.session_state["proposition_ia_med"] = response_med.text
+                                    
+                                    # Décompte Quota IA
+                                    incrémenter_quota_ia(st.session_state.get("user_email"))
+                                except Exception as e:
+                                    st.error(f"Erreur IA : {e}")
 
                     if "proposition_ia_med" in st.session_state:
                         st.warning("⚠️ **Proposition Gemini générée :**")
