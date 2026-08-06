@@ -12,6 +12,7 @@ import smtplib
 import sqlite3
 import time
 import urllib.parse
+import bcrypt
 from fpdf import FPDF
 import google.generativeai as genai
 import pandas as pd
@@ -186,6 +187,35 @@ def envoyer_email_candidat(to_email, sujet, corps_message, email_user, pwd_user)
         return False
 
 
+# --- SÉCURITÉ : HACHAGE DES MOTS DE PASSE (bcrypt) ---
+def hacher_mdp(mot_de_passe_clair):
+    """Retourne le hash bcrypt (str) d'un mot de passe en clair."""
+    return bcrypt.hashpw(mot_de_passe_clair.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def verifier_mdp(mot_de_passe_saisi, valeur_stockee):
+    """
+    Vérifie un mot de passe saisi contre la valeur stockée en base.
+    Supporte la transition en douceur depuis d'anciens mots de passe en clair :
+    - si la valeur stockée est un hash bcrypt valide -> vérification bcrypt
+    - sinon (ancien compte, mot de passe encore en clair) -> comparaison directe,
+      et le code appelant se charge de migrer le mot de passe vers un hash.
+    """
+    if not valeur_stockee:
+        return False
+    try:
+        if valeur_stockee.startswith("$2b$") or valeur_stockee.startswith("$2a$") or valeur_stockee.startswith("$2y$"):
+            return bcrypt.checkpw(mot_de_passe_saisi.encode("utf-8"), valeur_stockee.encode("utf-8"))
+    except Exception:
+        return False
+    # Ancien format (mot de passe en clair) - comparaison directe pour ne pas bloquer les comptes existants
+    return mot_de_passe_saisi == valeur_stockee
+
+
+def mdp_est_hashe(valeur_stockee):
+    return bool(valeur_stockee) and valeur_stockee.startswith(("$2b$", "$2a$", "$2y$"))
+
+
 # --- SYSTEME D'AUTHENTIFICATION ET GESTION DES ACCÈS & MESSAGERIE UTILISATEUR ---
 def check_password():
     if "password_correct" not in st.session_state:
@@ -233,7 +263,17 @@ def check_password():
         # Création de l'accès Admin par défaut si la table est vide
         c_auth.execute("SELECT COUNT(*) FROM utilisateurs")
         if c_auth.fetchone()[0] == 0:
-            mdp_admin = st.secrets.get("APP_PASSWORD", "Yamsteph2212")
+            mdp_admin_clair = st.secrets.get("APP_PASSWORD")
+            if not mdp_admin_clair:
+                st.error(
+                    "⚠️ Aucun mot de passe admin défini. Ajoutez APP_PASSWORD dans les "
+                    "secrets de l'application (Streamlit Cloud > Settings > Secrets) avant "
+                    "de continuer."
+                )
+                conn_auth.close()
+                st.stop()
+
+            mdp_admin_hash = hacher_mdp(mdp_admin_clair)
             default_mail = st.secrets.get("EMAIL_USER", "")
             default_pwd = st.secrets.get("EMAIL_PASSWORD", "")
             default_imap = st.secrets.get("EMAIL_IMAP", "imap.gmail.com")
@@ -242,7 +282,7 @@ def check_password():
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     "admin@omnirecrut.fr",
-                    mdp_admin,
+                    mdp_admin_hash,
                     "2099-12-31",
                     1,
                     default_mail,
@@ -316,7 +356,22 @@ def check_password():
                                 m_imap,
                                 db_statut,
                             ) = res
-                            if pwd_saisi == db_password:
+                            if verifier_mdp(pwd_saisi, db_password):
+                                # Migration silencieuse : si l'ancien mot de passe était
+                                # stocké en clair, on le remplace par un hash bcrypt.
+                                if not mdp_est_hashe(db_password):
+                                    try:
+                                        conn_mig = sqlite3.connect("recrutement_ia.db")
+                                        c_mig = conn_mig.cursor()
+                                        c_mig.execute(
+                                            "UPDATE utilisateurs SET password = ? WHERE email = ?",
+                                            (hacher_mdp(pwd_saisi), email_saisi),
+                                        )
+                                        conn_mig.commit()
+                                        conn_mig.close()
+                                    except Exception:
+                                        pass
+
                                 date_exp = datetime.date.fromisoformat(db_date_fin)
                                 aujourdhui = datetime.date.today()
 
@@ -633,13 +688,14 @@ if st.session_state.get("is_admin", False):
                         c_add.execute(
                             """INSERT INTO utilisateurs (email, password, date_fin_essai, est_admin, nb_requetes_ia)
                                VALUES (?, ?, ?, 0, 0)""",
-                            (p_email, p_pwd, date_fin_calc),
+                            (p_email, hacher_mdp(p_pwd), date_fin_calc),
                         )
                         conn_add.commit()
                         conn_add.close()
                         st.success(
                             f"Accès créé pour {p_email} jusqu'au"
-                            f" {datetime.date.fromisoformat(date_fin_calc).strftime('%d/%m/%Y')} !"
+                            f" {datetime.date.fromisoformat(date_fin_calc).strftime('%d/%m/%Y')} ! "
+                            f"Mot de passe à communiquer au prospect : **{p_pwd}**"
                         )
                     except sqlite3.IntegrityError:
                         st.error("Cet e-mail possède déjà un compte.")
