@@ -704,6 +704,36 @@ if st.session_state.get("is_admin", False):
                 else:
                     st.error("Champs manquants.")
 
+    # --- 1bis. SOUS-MENU : CHANGER SON PROPRE MOT DE PASSE ---
+    with st.sidebar.expander("🔑 Changer mon mot de passe"):
+        with st.form("form_changer_mdp_admin"):
+            nouveau_mdp_1 = st.text_input("Nouveau mot de passe :", type="password")
+            nouveau_mdp_2 = st.text_input("Confirmer le nouveau mot de passe :", type="password")
+            btn_changer_mdp = st.form_submit_button("Mettre à jour le mot de passe")
+
+            if btn_changer_mdp:
+                if not nouveau_mdp_1 or not nouveau_mdp_2:
+                    st.error("Merci de remplir les deux champs.")
+                elif nouveau_mdp_1 != nouveau_mdp_2:
+                    st.error("Les deux mots de passe ne correspondent pas.")
+                elif len(nouveau_mdp_1) < 8:
+                    st.error("Le mot de passe doit faire au moins 8 caractères.")
+                else:
+                    try:
+                        conn_pwd = sqlite3.connect("recrutement_ia.db")
+                        c_pwd = conn_pwd.cursor()
+                        c_pwd.execute(
+                            "UPDATE utilisateurs SET password = ? WHERE email = ?",
+                            (hacher_mdp(nouveau_mdp_1), st.session_state.get("user_email")),
+                        )
+                        conn_pwd.commit()
+                        conn_pwd.close()
+                        st.success(
+                            "✅ Mot de passe mis à jour. Il sera actif dès ta prochaine connexion."
+                        )
+                    except Exception as e_pwd:
+                        st.error(f"Erreur lors de la mise à jour : {e_pwd}")
+
     # --- 2. SOUS-MENU : SUIVI & RÉINITIALISATION DES QUOTAS IA ---
     with st.sidebar.expander("📊 Quotas IA & Remise à 0"):
         try:
@@ -1012,19 +1042,31 @@ elif st.session_state['page_active'] == "🎯 MATCHING IA OFFRES & CV":
                     
                     # --- PROMPT ENRICHI : ANALYSE CONTEXTUELLE & COMPÉTENCES TRANSFÉRABLES ---
                     prompt = f"""
-                    Tu es un Expert Recruteur et Chasseur de Têtes. Analyse ce CV par rapport à la fiche de poste fournis.
-                    
+                    Tu es un Expert Recruteur et Chasseur de Têtes, spécialisé dans la détection de potentiel
+                    au-delà du matching par mots-clés classique. Analyse ce CV par rapport à la fiche de poste fournie.
+
                     CONSIGNES CLÉS :
                     1. Ne te limite pas à la recherche stricte de mots-clés.
                     2. Analyse la trajectoire, la cohérence du parcours et le potentiel du candidat.
-                    3. Détecte les compétences transférables et transversales (soft skills, organisation, relation client, gestion du stress, rigueur) acquises dans d'autres secteurs.
-                    
+                    3. Détecte les compétences transférables et transversales (soft skills, organisation, relation
+                       client, gestion du stress, rigueur) acquises dans d'autres secteurs. Pour CHAQUE compétence
+                       transférable identifiée, indique explicitement de quelle expérience concrète du CV elle
+                       provient (ex : "Gestion du stress sous forte contrainte de temps — issue de 5 ans en cuisine
+                       de restauration rapide"). N'invente jamais une expérience qui ne figure pas dans le CV.
+                    4. Si le parcours ne permet pas d'identifier de compétence transférable pertinente pour ce poste,
+                       dis-le clairement plutôt que d'en inventer une pour combler.
+
                     Renvoie STRICTEMENT un objet JSON valide avec les clés suivantes :
                     - 'nom': Prénom et Nom du candidat (ou 'Inconnu')
                     - 'coordonnees': Téléphone et Email si présents
-                    - 'competences': Résumé des compétences clés + compétences transférables détectées
-                    - 'score': Un entier entre 0 et 100 reflétant l'adéquation globale (comprenant le potentiel et la transférabilité)
-                    - 'justification': Synthèse de 3-4 lignes expliquant les points forts du profil, ses compétences transférables et pourquoi sa candidature est pertinente au-delà des simples mots-clés.
+                    - 'competences_directes': Compétences techniques/métier directement alignées avec l'offre
+                    - 'competences_transferables': Liste de compétences transférables, CHACUNE accompagnée de sa
+                       source ("compétence — issue de [expérience précise du CV]")
+                    - 'score_technique': Entier 0-100, adéquation sur les compétences techniques/mots-clés directs
+                    - 'score_potentiel': Entier 0-100, adéquation sur la trajectoire et les compétences transférables
+                    - 'score': Entier 0-100, score global pondéré (technique + potentiel)
+                    - 'justification': Synthèse de 3-4 lignes expliquant pourquoi ce profil est pertinent au-delà
+                       des simples mots-clés, en t'appuyant sur les éléments concrets identifiés ci-dessus.
 
                     OFFRE :
                     {texte_offre}
@@ -1036,11 +1078,26 @@ elif st.session_state['page_active'] == "🎯 MATCHING IA OFFRES & CV":
                     response = model.generate_content(prompt)
                     txt = response.text.strip().replace("```json", "").replace("```", "").strip()
                     data = json.loads(txt)
-                    
+
+                    competences_directes = data.get("competences_directes", "Non spécifié")
+                    competences_transferables_liste = data.get("competences_transferables", [])
+                    if isinstance(competences_transferables_liste, list):
+                        competences_transferables_txt = " | ".join(competences_transferables_liste)
+                    else:
+                        competences_transferables_txt = str(competences_transferables_liste)
+
+                    resume_competences = f"{competences_directes}"
+                    if competences_transferables_txt:
+                        resume_competences += f" — Transférables : {competences_transferables_txt}"
+
                     resultats_matching.append({
                         "nom": data.get("nom", "Inconnu"), 
                         "coordonnees": data.get("coordonnees", "Non spécifié"),
-                        "competences": data.get("competences", "Non spécifié"), 
+                        "competences": resume_competences,
+                        "competences_directes": competences_directes,
+                        "competences_transferables_liste": competences_transferables_liste if isinstance(competences_transferables_liste, list) else [],
+                        "score_technique": str(data.get("score_technique", "0")),
+                        "score_potentiel": str(data.get("score_potentiel", "0")),
                         "score": str(data.get("score", "0")),
                         "justification": data.get("justification", "Pas d'avis"), 
                         "cv_texte": texte_cv
@@ -1058,8 +1115,60 @@ elif st.session_state['page_active'] == "🎯 MATCHING IA OFFRES & CV":
     if st.session_state['derniers_matchs']:
         st.markdown("---")
         st.subheader("📊 Résultats de l'analyse")
-        df_res = pd.DataFrame(st.session_state['derniers_matchs']).drop(columns=["cv_texte"], errors='ignore')
-        st.dataframe(df_res, use_container_width=True)
+
+        resultats_tries = sorted(
+            st.session_state['derniers_matchs'],
+            key=lambda x: int(x.get("score", "0") or 0),
+            reverse=True
+        )
+
+        for i, cand in enumerate(resultats_tries):
+            score_global = int(cand.get("score", "0") or 0)
+            score_tech = int(cand.get("score_technique", "0") or 0)
+            score_pot = int(cand.get("score_potentiel", "0") or 0)
+
+            if score_global >= 70:
+                couleur_badge = "#2e7d32"  # vert
+            elif score_global >= 40:
+                couleur_badge = "#f59e0b"  # orange
+            else:
+                couleur_badge = "#c53030"  # rouge
+
+            with st.container():
+                st.markdown(f"""
+                    <div style="background-color: #2d3748; border-radius: 10px; padding: 18px; margin-bottom: 14px; border-left: 5px solid {couleur_badge};">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <span style="font-size: 18px; font-weight: 700; color: #ffffff;">{cand.get('nom', 'Inconnu')}</span>
+                            <span style="background-color: {couleur_badge}; color: white; padding: 4px 14px; border-radius: 20px; font-weight: 700;">{score_global}%</span>
+                        </div>
+                        <div style="color: #a3b1cc; font-size: 13px; margin-top: 4px;">{cand.get('coordonnees', 'Non spécifié')}</div>
+                    </div>
+                """, unsafe_allow_html=True)
+
+                col_score1, col_score2 = st.columns(2)
+                with col_score1:
+                    st.caption("🎯 Adéquation technique (mots-clés directs)")
+                    st.progress(min(1.0, score_tech / 100))
+                with col_score2:
+                    st.caption("🌱 Potentiel & compétences transférables")
+                    st.progress(min(1.0, score_pot / 100))
+
+                with st.expander(f"📋 Voir le détail du profil — {cand.get('nom', 'Inconnu')}"):
+                    st.markdown("**Compétences directes**")
+                    st.write(cand.get("competences_directes", "Non spécifié"))
+
+                    liste_transf = cand.get("competences_transferables_liste", [])
+                    if liste_transf:
+                        st.markdown("**🌱 Compétences transférables détectées**")
+                        for comp in liste_transf:
+                            st.markdown(f"- {comp}")
+                    else:
+                        st.caption("Aucune compétence transférable notable détectée pour ce poste.")
+
+                    st.markdown("**Synthèse du recruteur IA**")
+                    st.write(cand.get("justification", "Pas d'avis"))
+
+                st.markdown("<br>", unsafe_allow_html=True)
         
     st.markdown("---")
     st.subheader("📥 Enregistrement ciblé dans le Vivier")
