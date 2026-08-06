@@ -4,3 +4,4 @@ google-generativeai
 pypdf
 fpdf2
 reportlab
+bcrypt
