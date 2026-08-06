@@ -1,0 +1,12 @@
+# Base de données locale - ne doit jamais être versionnée
+*.db
+*.db-shm
+*.db-wal
+
+# Secrets Streamlit - ne doit jamais être versionné
+.streamlit/secrets.toml
+
+# Fichiers système
+.DS_Store
+__pycache__/
+*.pyc
