@@ -27,11 +27,17 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    .stTextInput>div>div>input, .stTextArea>div>div>textarea { 
-        color: #ffffff !important; 
-    }
-    textarea, input {
+    input, textarea, select {
         color: #ffffff !important;
+        background-color: #2d3748 !important;
+    }
+    div[data-baseweb="input"] input,
+    div[data-baseweb="textarea"] textarea,
+    div[data-baseweb="select"] div,
+    div[data-baseweb="datepicker"] input {
+        color: #ffffff !important;
+        background-color: #2d3748 !important;
+        border: 1px solid #4a5568 !important;
     }
     </style>
 """,
@@ -304,7 +310,8 @@ def check_password():
         <style>
         .stApp { background-color: #1a202c; color: #e2e8f0; }
         label, [data-testid="stWidgetLabel"] p { color: #ffffff !important; font-weight: 600 !important; }
-        .stTextInput>div>div>input { background-color: #2d3748 !important; color: #e2e8f0 !important; border: 1px solid #4a5568 !important; }
+        input, textarea { background-color: #2d3748 !important; color: #ffffff !important; }
+        div[data-baseweb="input"] input { background-color: #2d3748 !important; color: #ffffff !important; border: 1px solid #4a5568 !important; }
         </style>
     """,
         unsafe_allow_html=True,
@@ -443,6 +450,234 @@ try:
 except Exception:
     pass
 
+# --- Colonnes étendues pour l'agent d'analyse enrichie (vivier, sans offre) ---
+for _col, _type in {
+    "competences_transferables": "TEXT",
+    "profil_riasec": "TEXT",
+    "metiers_cibles": "TEXT",
+    "date_ajout": "TEXT",
+}.items():
+    try:
+        c.execute(f"ALTER TABLE candidats ADD COLUMN {_col} {_type}")
+    except Exception:
+        pass
+
+# ==============================================================================
+# --- AGENT IA D'ANALYSE ENRICHIE DE CV (function calling Gemini) ---
+# Analyse un CV brut SANS offre de référence : hard skills, diplômes,
+# compétences transférables justifiées, profil RIASEC, métiers cibles.
+# L'agent enregistre lui-même le résultat dans la table candidats via un tool.
+# ==============================================================================
+
+def _save_candidate_to_sqlite(
+    nom_complet: str,
+    diplomes: list,
+    hard_skills: list,
+    soft_skills_transferables: list,
+    riasec_type_dominant: str,
+    riasec_types_secondaires: list,
+    riasec_traits_deduits: list,
+    metiers_cibles: list,
+    pourcentage_adequation: int,
+    compte_rendu: str,
+    secteur_metier: str = "Non spécifié",
+    cv_texte: str = "",
+) -> dict:
+    """Tool exécuté par l'agent : enregistre le profil enrichi dans la table candidats existante."""
+    poste_cible = metiers_cibles[0] if metiers_cibles else "Profil Analysé"
+    competences_resume = ", ".join(hard_skills + diplomes) if (hard_skills or diplomes) else "Non spécifié"
+    profil_riasec = {
+        "type_dominant": riasec_type_dominant,
+        "types_secondaires": riasec_types_secondaires,
+        "traits_deduits": riasec_traits_deduits,
+    }
+
+    c.execute(
+        """INSERT INTO candidats
+           (nom, poste, competences, statut, categorie_ia, avis_ia, score_matching,
+            secteur_metier, cv_texte, competences_transferables, profil_riasec, metiers_cibles, date_ajout)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            nom_complet,
+            poste_cible,
+            competences_resume,
+            "Nouveau",
+            riasec_type_dominant or "À Classer",
+            compte_rendu,
+            f"{pourcentage_adequation} %",
+            secteur_metier,
+            cv_texte,
+            json.dumps(soft_skills_transferables, ensure_ascii=False),
+            json.dumps(profil_riasec, ensure_ascii=False),
+            json.dumps(metiers_cibles, ensure_ascii=False),
+            datetime.datetime.now().isoformat(),
+        ),
+    )
+    candidat_id = c.lastrowid
+    conn.commit()
+
+    alertes = _matcher_candidat_vs_besoins_ouverts(candidat_id, nom_complet, poste_cible, competences_resume, secteur_metier)
+    message = f"Candidat '{nom_complet}' enregistré dans le vivier."
+    if alertes:
+        message += f" {len(alertes)} correspondance(s) détectée(s) avec des besoins clients ouverts."
+    return {"status": "success", "message": message, "alertes": alertes}
+
+
+_AGENT_TOOLS = {"save_candidate_to_sqlite": _save_candidate_to_sqlite}
+
+
+def _proto_to_python(value):
+    """Convertit récursivement les types protobuf renvoyés par function_call.args
+    (MapComposite, RepeatedComposite) en dict/list Python natifs, sinon json.dumps
+    et les opérations sur listes (+) plantent silencieusement."""
+    if isinstance(value, (list,)) or type(value).__name__ == "RepeatedComposite":
+        return [_proto_to_python(v) for v in value]
+    if isinstance(value, dict) or type(value).__name__ == "MapComposite":
+        return {k: _proto_to_python(v) for k, v in value.items()}
+    return value
+
+# Schéma volontairement APLATI (pas de liste d'objets, pas d'objet imbriqué) :
+# gemini-2.5-flash est beaucoup moins fiable que pro sur les schémas de tools
+# fortement imbriqués, ce qui déclenche des finish_reason MALFORMED_FUNCTION_CALL.
+_tool_save_candidate = genai.protos.Tool(
+    function_declarations=[
+        genai.protos.FunctionDeclaration(
+            name="save_candidate_to_sqlite",
+            description="Enregistre le profil complet et enrichi d'un candidat dans la base du vivier.",
+            parameters=genai.protos.Schema(
+                type=genai.protos.Type.OBJECT,
+                properties={
+                    "nom_complet": genai.protos.Schema(type=genai.protos.Type.STRING),
+                    "diplomes": genai.protos.Schema(
+                        type=genai.protos.Type.ARRAY,
+                        items=genai.protos.Schema(type=genai.protos.Type.STRING),
+                    ),
+                    "hard_skills": genai.protos.Schema(
+                        type=genai.protos.Type.ARRAY,
+                        items=genai.protos.Schema(type=genai.protos.Type.STRING),
+                    ),
+                    "soft_skills_transferables": genai.protos.Schema(
+                        type=genai.protos.Type.ARRAY,
+                        items=genai.protos.Schema(type=genai.protos.Type.STRING),
+                        description=(
+                            "Une compétence transférable par ligne, au format : "
+                            "'compétence — issue de [expérience précise du CV] — [pourquoi c'est un atout]'."
+                        ),
+                    ),
+                    "riasec_type_dominant": genai.protos.Schema(
+                        type=genai.protos.Type.STRING,
+                        description="Un des 6 types RIASEC : Réaliste, Investigateur, Artistique, Social, Entreprenant, Conventionnel.",
+                    ),
+                    "riasec_types_secondaires": genai.protos.Schema(
+                        type=genai.protos.Type.ARRAY,
+                        items=genai.protos.Schema(type=genai.protos.Type.STRING),
+                    ),
+                    "riasec_traits_deduits": genai.protos.Schema(
+                        type=genai.protos.Type.ARRAY,
+                        items=genai.protos.Schema(type=genai.protos.Type.STRING),
+                    ),
+                    "metiers_cibles": genai.protos.Schema(
+                        type=genai.protos.Type.ARRAY,
+                        items=genai.protos.Schema(type=genai.protos.Type.STRING),
+                    ),
+                    "pourcentage_adequation": genai.protos.Schema(type=genai.protos.Type.INTEGER),
+                    "compte_rendu": genai.protos.Schema(type=genai.protos.Type.STRING),
+                },
+                required=[
+                    "nom_complet", "diplomes", "hard_skills", "soft_skills_transferables",
+                    "riasec_type_dominant", "riasec_types_secondaires", "riasec_traits_deduits",
+                    "metiers_cibles", "pourcentage_adequation", "compte_rendu",
+                ],
+            ),
+        )
+    ]
+)
+
+_SYSTEM_PROMPT_AGENT = """
+Tu es un agent IA expert en analyse de profils professionnels pour un cabinet de recrutement.
+Ta mission : analyser un CV brut, SANS offre d'emploi de référence, pour enrichir un vivier de candidats.
+Tu dois être rigoureux, factuel, et ne jamais inventer d'informations absentes du CV.
+
+Procède dans cet ordre exact :
+1. ANALYSE TECHNIQUE : liste les diplômes/certifications et les compétences dures (hard skills),
+   outils, logiciels, langages, méthodes, habilitations. Sois précis, évite les généralités.
+2. COMPÉTENCES TRANSFÉRABLES : pour chaque expérience (même hors secteur cible), identifie les
+   compétences généralistes/transversales. Formule chaque compétence en UNE SEULE phrase au format
+   'compétence — issue de [expérience précise du CV] — [pourquoi c'est un atout dans un nouveau métier]'.
+3. PROFIL RIASEC : analyse subtilement les centres d'intérêt et le style rédactionnel pour déduire
+   un type RIASEC dominant, 1-2 types secondaires, et des traits professionnels plausibles — formulés
+   comme des hypothèses argumentées, jamais comme un diagnostic définitif.
+4. SYNTHÈSE & MÉTIERS CIBLES : rédige un compte-rendu détaillé et structuré (plusieurs paragraphes,
+   pas un simple résumé de 3-4 lignes) qui reprend et argumente chacun des points précédents :
+   le profil général du candidat, l'analyse de son parcours, la lecture de ses compétences
+   transférables, l'interprétation du profil RIASEC, puis la logique derrière les métiers cibles
+   proposés. Ce texte doit se suffire à lui-même pour qu'un recruteur comprenne le raisonnement
+   sans avoir à relire le CV. Propose ensuite une liste de métiers cibles cohérents classés par
+   pertinence, et calcule un pourcentage d'adéquation global argumenté.
+5. ENREGISTREMENT : appelle SYSTÉMATIQUEMENT et une seule fois la fonction save_candidate_to_sqlite
+   avec tous les champs remplis (champs à plat, pas d'objets imbriqués), une fois l'analyse complète.
+
+Contraintes : n'invente jamais un diplôme, une compétence ou une expérience absente du CV ; si une
+information est ambiguë ou manquante, dis-le explicitement plutôt que de la deviner. Reste neutre et
+professionnel, sans jugement de valeur sur le parcours du candidat.
+"""
+
+_agent_model = genai.GenerativeModel(
+    model_name="gemini-2.5-flash",
+    system_instruction=_SYSTEM_PROMPT_AGENT,
+    tools=[_tool_save_candidate],
+    generation_config={"temperature": 0.3},
+)
+
+
+def analyser_cv_avec_agent(texte_cv: str, secteur_metier: str, max_tentatives: int = 3) -> dict:
+    """Lance l'agent sur un CV brut. Le tool enregistre lui-même le candidat en base.
+    Retourne {'compte_rendu': str, 'donnees_structurees': dict | None}.
+    Réessaie automatiquement en cas de MALFORMED_FUNCTION_CALL (limite connue des modèles flash
+    sur des schémas de tools complexes)."""
+    for tentative in range(1, max_tentatives + 1):
+        try:
+            chat = _agent_model.start_chat(enable_automatic_function_calling=False)
+            response = chat.send_message(
+                f"Voici un CV brut à analyser et à enregistrer dans le vivier :\n\n{texte_cv}"
+            )
+            donnees_structurees = None
+
+            while True:
+                finish_reason = response.candidates[0].finish_reason
+                if str(finish_reason).endswith("MALFORMED_FUNCTION_CALL"):
+                    raise ValueError("MALFORMED_FUNCTION_CALL")
+
+                function_call = next(
+                    (p.function_call for p in response.candidates[0].content.parts if p.function_call),
+                    None,
+                )
+                if function_call is None:
+                    return {"compte_rendu": response.text, "donnees_structurees": donnees_structurees}
+
+                fn_name = function_call.name
+                fn_args = _proto_to_python(dict(function_call.args))
+                if fn_name == "save_candidate_to_sqlite":
+                    fn_args["secteur_metier"] = secteur_metier
+                    fn_args["cv_texte"] = texte_cv
+                donnees_structurees = fn_args
+
+                result = _AGENT_TOOLS.get(
+                    fn_name, lambda **_: {"status": "error", "message": "Fonction inconnue"}
+                )(**fn_args)
+
+                response = chat.send_message(
+                    genai.protos.Content(parts=[genai.protos.Part(
+                        function_response=genai.protos.FunctionResponse(name=fn_name, response={"result": result})
+                    )])
+                )
+        except Exception as e:
+            if tentative == max_tentatives:
+                raise
+            time.sleep(1.5 * tentative)
+            continue
+
+
 c.execute("""CREATE TABLE IF NOT EXISTS clients 
              (id INTEGER PRIMARY KEY AUTOINCREMENT, entreprise TEXT, secteur TEXT, contact TEXT, 
              secteur_activite TEXT DEFAULT 'Non spécifié', tel TEXT, email TEXT, priorite TEXT, notes TEXT)""")
@@ -454,6 +689,250 @@ except sqlite3.OperationalError:
         c.execute("ALTER TABLE clients ADD COLUMN secteur_geo TEXT DEFAULT 'Béziers'")
     except sqlite3.OperationalError:
         pass
+
+# ==============================================================================
+# --- VEILLE PROACTIVE : besoins clients persistés + alertes de matching ---
+# Un besoin client est désormais enregistré en base (au lieu d'être éphémère).
+# Dès qu'un nouveau candidat est ajouté au vivier (via l'agent) OU qu'un nouveau
+# besoin est enregistré, l'IA compare automatiquement l'un à l'autre et crée
+# une alerte si le score dépasse SEUIL_ALERTE_MATCHING.
+# ==============================================================================
+
+SEUIL_ALERTE_MATCHING = 70  # score mini (0-100) pour déclencher une alerte
+
+c.execute("""CREATE TABLE IF NOT EXISTS besoins_clients (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entreprise TEXT,
+    secteur TEXT,
+    description TEXT,
+    statut TEXT DEFAULT 'Ouvert',
+    date_creation TEXT
+)""")
+
+c.execute("""CREATE TABLE IF NOT EXISTS alertes_matching (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    candidat_id INTEGER,
+    candidat_nom TEXT,
+    besoin_id INTEGER,
+    besoin_entreprise TEXT,
+    besoin_description TEXT,
+    score INTEGER,
+    raison TEXT,
+    lue INTEGER DEFAULT 0,
+    date_alerte TEXT
+)""")
+conn.commit()
+
+
+def _extraire_json_liste(texte_brut: str) -> list:
+    """Extrait un tableau JSON d'une réponse Gemini, même entourée de texte ou de balises markdown."""
+    txt = texte_brut.strip().replace("```json", "").replace("```", "").strip()
+    if "[" in txt and "]" in txt:
+        txt = txt[txt.find("["): txt.rfind("]") + 1]
+    try:
+        return json.loads(txt)
+    except Exception:
+        return []
+
+
+def _matcher_candidat_vs_besoins_ouverts(candidat_id: int, nom: str, poste: str, competences: str, secteur: str) -> list:
+    """Déclenchée automatiquement après l'ajout d'un candidat : le compare à tous les
+    besoins ouverts du même secteur et crée une alerte pour chaque score suffisant."""
+    c.execute("SELECT id, entreprise, description FROM besoins_clients WHERE secteur = ? AND statut = 'Ouvert'", (secteur,))
+    besoins = c.fetchall()
+    if not besoins:
+        return []
+
+    besoins_data = [{"besoin_id": b[0], "entreprise": b[1], "description": b[2]} for b in besoins]
+    try:
+        model_match = genai.GenerativeModel("gemini-2.5-flash")
+        prompt = f"""Compare ce candidat à chacun des besoins clients ci-dessous.
+Candidat : poste cible '{poste}', compétences : {competences}.
+Besoins : {json.dumps(besoins_data, ensure_ascii=False)}
+Renvoie STRICTEMENT un tableau JSON, un objet par besoin, avec les clés :
+'besoin_id' (reprends l'id fourni), 'score' (entier 0-100), 'raison' (une phrase courte)."""
+        response = model_match.generate_content(prompt)
+        resultats = _extraire_json_liste(response.text)
+    except Exception:
+        return []
+
+    besoins_par_id = {b[0]: b for b in besoins}
+    alertes_creees = []
+    for r in resultats:
+        try:
+            score = int(r.get("score", 0))
+        except Exception:
+            score = 0
+        besoin_id = r.get("besoin_id")
+        if score >= SEUIL_ALERTE_MATCHING and besoin_id in besoins_par_id:
+            b = besoins_par_id[besoin_id]
+            c.execute(
+                """INSERT INTO alertes_matching
+                   (candidat_id, candidat_nom, besoin_id, besoin_entreprise, besoin_description, score, raison, date_alerte)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (candidat_id, nom, besoin_id, b[1], b[2], score, r.get("raison", ""), datetime.datetime.now().isoformat()),
+            )
+            alertes_creees.append({"besoin_entreprise": b[1], "score": score, "raison": r.get("raison", "")})
+    if alertes_creees:
+        conn.commit()
+    return alertes_creees
+
+
+def matcher_besoin_vs_vivier(besoin_id: int, secteur: str, description: str) -> list:
+    """Appelée quand un nouveau besoin client est enregistré : le compare à tous les
+    candidats du vivier du même secteur et crée une alerte pour chaque score suffisant."""
+    c.execute("SELECT id, nom, poste, competences FROM candidats WHERE secteur_metier = ?", (secteur,))
+    candidats = c.fetchall()
+    if not candidats:
+        return []
+
+    candidats_data = [{"candidat_id": cd[0], "nom": cd[1], "poste": cd[2], "competences": cd[3]} for cd in candidats]
+    try:
+        model_match = genai.GenerativeModel("gemini-2.5-flash")
+        prompt = f"""Compare ce besoin client à chacun des candidats ci-dessous.
+Besoin : {description}
+Candidats : {json.dumps(candidats_data, ensure_ascii=False)}
+Renvoie STRICTEMENT un tableau JSON, un objet par candidat, avec les clés :
+'candidat_id' (reprends l'id fourni), 'score' (entier 0-100), 'raison' (une phrase courte)."""
+        response = model_match.generate_content(prompt)
+        resultats = _extraire_json_liste(response.text)
+    except Exception:
+        return []
+
+    c.execute("SELECT entreprise FROM besoins_clients WHERE id = ?", (besoin_id,))
+    entreprise_row = c.fetchone()
+    entreprise = entreprise_row[0] if entreprise_row else "Client"
+
+    candidats_par_id = {cd[0]: cd for cd in candidats}
+    alertes_creees = []
+    for r in resultats:
+        try:
+            score = int(r.get("score", 0))
+        except Exception:
+            score = 0
+        candidat_id = r.get("candidat_id")
+        if score >= SEUIL_ALERTE_MATCHING and candidat_id in candidats_par_id:
+            cd = candidats_par_id[candidat_id]
+            c.execute(
+                """INSERT INTO alertes_matching
+                   (candidat_id, candidat_nom, besoin_id, besoin_entreprise, besoin_description, score, raison, date_alerte)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (candidat_id, cd[1], besoin_id, entreprise, description, score, r.get("raison", ""), datetime.datetime.now().isoformat()),
+            )
+            alertes_creees.append({"candidat_nom": cd[1], "score": score, "raison": r.get("raison", "")})
+    if alertes_creees:
+        conn.commit()
+    return alertes_creees
+
+# ==============================================================================
+# --- AUTOMATISATIONS IA SUPPLÉMENTAIRES — DOCTRINE DE SÉCURITÉ ---
+#
+# Règle appliquée à TOUTES les fonctions ci-dessous, sans exception :
+#   ✅ L'IA peut LIRE des données et CALCULER des indicateurs déterministes.
+#   ✅ L'IA peut RÉDIGER des brouillons (e-mails, suggestions, résumés).
+#   ❌ L'IA ne peut JAMAIS, de sa propre initiative :
+#        - envoyer un e-mail réel à un candidat ou un client
+#        - modifier/supprimer un contrat, un candidat ou un besoin existant
+#        - lancer une action de sourcing externe
+#        - faire passer une suggestion réglementaire en note officielle validée
+#   Chacune de ces actions engageantes reste déclenchée par un clic humain
+#   explicite, après relecture du brouillon ou de la suggestion à l'écran.
+# ==============================================================================
+
+def generer_digest_quotidien() -> dict:
+    """Purement déterministe — AUCUN appel IA ici. Agrège des faits déjà en base,
+    ne prend et ne suggère aucune décision."""
+    digest = {}
+    try:
+        c.execute("SELECT COUNT(*) FROM alertes_matching WHERE lue = 0")
+        digest["alertes_non_lues"] = c.fetchone()[0] or 0
+    except Exception:
+        digest["alertes_non_lues"] = 0
+
+    try:
+        aujourd_hui = datetime.date.today().isoformat()
+        limite_medecine = (datetime.date.today() + datetime.timedelta(days=15)).isoformat()
+        c.execute(
+            """SELECT candidat_nom, date_limite_medecine FROM contrats
+               WHERE date_limite_medecine BETWEEN ? AND ? ORDER BY date_limite_medecine ASC""",
+            (aujourd_hui, limite_medecine),
+        )
+        digest["visites_medecine_proches"] = c.fetchall()
+    except Exception:
+        digest["visites_medecine_proches"] = []
+
+    try:
+        limite_fin_contrat = (datetime.date.today() + datetime.timedelta(days=7)).isoformat()
+        c.execute(
+            """SELECT candidat_nom, date_fin, entreprise_nom FROM contrats
+               WHERE date_fin BETWEEN ? AND ? ORDER BY date_fin ASC""",
+            (aujourd_hui, limite_fin_contrat),
+        )
+        digest["fins_de_contrat_proches"] = c.fetchall()
+    except Exception:
+        digest["fins_de_contrat_proches"] = []
+
+    try:
+        seuil_dormance = (datetime.date.today() - datetime.timedelta(days=30)).isoformat()
+        c.execute(
+            """SELECT id, nom, poste FROM candidats
+               WHERE statut = 'Disponible' AND (date_ajout IS NULL OR date_ajout <= ?)""",
+            (seuil_dormance,),
+        )
+        digest["candidats_dormants"] = c.fetchall()
+    except Exception:
+        digest["candidats_dormants"] = []
+
+    return digest
+
+
+def generer_brouillon_relance(nom_candidat: str, poste: str) -> str:
+    """Génère UNIQUEMENT un texte de brouillon, jamais envoyé automatiquement.
+    L'envoi reste un clic humain explicite (ouverture du client mail via mailto)."""
+    try:
+        model_relance = genai.GenerativeModel("gemini-2.5-flash")
+        prompt = f"Rédige un e-mail court et chaleureux de relance pour {nom_candidat}, candidat de notre vivier sur le poste de {poste}, pour savoir s'il/elle est toujours disponible. Signe 'L'équipe OmniRecrut IA'."
+        response = model_relance.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"Erreur lors de la génération du brouillon : {e}"
+
+
+def generer_suggestion_medecine(poste: str) -> str:
+    """Génère UNIQUEMENT une suggestion de suivi. Stockée à part (colonne
+    suggestion_ia_medecine), jamais injectée automatiquement dans les notes
+    officielles — l'injection reste un clic humain explicite."""
+    try:
+        model_med = genai.GenerativeModel("gemini-2.5-flash")
+        prompt = f"Donne sous forme de puces courtes les 2 principales obligations de sécurité/EPI pour un poste de {poste}."
+        response = model_med.generate_content(prompt)
+        return response.text
+    except Exception:
+        return ""
+
+
+def analyser_cv_preview(texte_cv: str):
+    """Analyse un CV et renvoie les données structurées SANS JAMAIS écrire en base.
+    Utilisée pour les CV récupérés automatiquement par e-mail : contrairement à
+    l'upload manuel (où le clic de l'utilisateur vaut déjà validation), un CV arrivé
+    par e-mail n'a pas été choisi individuellement — l'ajout au vivier reste donc une
+    confirmation humaine explicite (voir bouton dédié dans l'UI)."""
+    try:
+        model_preview = genai.GenerativeModel("gemini-2.5-flash")
+        prompt = f"""{_SYSTEM_PROMPT_AGENT}
+
+Renvoie UNIQUEMENT un objet JSON valide (aucun texte autour, aucun appel de fonction) avec
+exactement les clés : nom_complet, diplomes, hard_skills, soft_skills_transferables,
+riasec_type_dominant, riasec_types_secondaires, riasec_traits_deduits, metiers_cibles,
+pourcentage_adequation, compte_rendu.
+
+CV à analyser :
+{texte_cv}"""
+        response = model_preview.generate_content(prompt)
+        txt = response.text.strip().replace("```json", "").replace("```", "").strip()
+        return json.loads(txt)
+    except Exception:
+        return None
 
 # ==============================================================================
 # 2. GESTION DU RETOUR DE PAIEMENT STRIPE (REDIRECTION DÉTECTÉE)
@@ -472,6 +951,35 @@ if query_params.get("payment") == "success":
 # 3. PANNEAU LATÉRAL (SIDEBAR) : QUOTAS & BOUTON STRIPE
 # ==============================================================================
 with st.sidebar:
+    # --- 🔔 ALERTES DE MATCHING (veille proactive) ---
+    try:
+        c.execute("SELECT COUNT(*) FROM alertes_matching WHERE lue = 0")
+        nb_alertes_non_lues = c.fetchone()[0] or 0
+    except Exception:
+        nb_alertes_non_lues = 0
+
+    with st.expander(f"🔔 Alertes de matching ({nb_alertes_non_lues})", expanded=(nb_alertes_non_lues > 0)):
+        try:
+            c.execute("""SELECT id, candidat_nom, besoin_entreprise, besoin_description, score, raison, lue
+                         FROM alertes_matching ORDER BY lue ASC, id DESC LIMIT 15""")
+            lignes_alertes = c.fetchall()
+        except Exception:
+            lignes_alertes = []
+
+        if not lignes_alertes:
+            st.caption("Aucune alerte pour le moment.")
+        else:
+            for alerte_id, cand_nom, entreprise, desc_besoin, score_al, raison_al, lue in lignes_alertes:
+                badge = "🟢" if not lue else "⚪"
+                st.markdown(f"{badge} **{cand_nom}** ↔ **{entreprise}** — {score_al}%")
+                st.caption(raison_al or desc_besoin[:80])
+                if not lue:
+                    if st.button("✅ Marquer comme lue", key=f"lue_{alerte_id}", use_container_width=True):
+                        c.execute("UPDATE alertes_matching SET lue = 1 WHERE id = ?", (alerte_id,))
+                        conn.commit()
+                        st.rerun()
+                st.markdown("---")
+
     st.markdown("<h3 style='color: #ffffff !important;'>⚙️ Mon Compte</h3>", unsafe_allow_html=True)
     user_email = st.session_state.get("user_email", "")
     
@@ -538,6 +1046,11 @@ try:
 except Exception:
   pass
 
+try:
+  c.execute("ALTER TABLE contrats ADD COLUMN suggestion_ia_medecine TEXT")
+except Exception:
+  pass
+
 c.execute("""CREATE TABLE IF NOT EXISTS suivi_heures (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 candidat_nom TEXT,
@@ -569,7 +1082,8 @@ st.markdown(
     label, [data-testid="stWidgetLabel"] p { color: #ffffff !important; font-weight: 600 !important; font-size: 1rem !important; }
     div.stButton > button:first-child { background-color: #fb8500 !important; color: #111622 !important; font-weight: bold; border: none; border-radius: 4px; padding: 0.5rem 2rem; }
     div.stButton > button:first-child:hover { background-color: #ffb703 !important; color: #111622 !important; }
-    .stTextInput>div>div>input, .stTextArea>div>div>textarea, .stSelectbox>div>div>div { background-color: #2d3748 !important; color: #e2e8f0 !important; border: 1px solid #4a5568 !important; }
+    input, textarea, select { background-color: #2d3748 !important; color: #ffffff !important; }
+    div[data-baseweb="input"] input, div[data-baseweb="textarea"] textarea, div[data-baseweb="select"] div, div[data-baseweb="datepicker"] input { background-color: #2d3748 !important; color: #ffffff !important; border: 1px solid #4a5568 !important; }
     </style>
 """,
     unsafe_allow_html=True,
@@ -795,6 +1309,7 @@ if st.session_state.get("is_admin", False):
             st.error(f"Erreur lors de la suppression : {e_del}")
 
 options_menu = [
+    "🧭 TABLEAU DE BORD",
     "🗃️ VIVIER DE CANDIDATS", 
     "🎯 MATCHING IA OFFRES & CV",
     "🏢 PORTEFEUILLE CLIENTS",
@@ -809,8 +1324,65 @@ index_actuel = options_menu.index(st.session_state['page_active']) if st.session
 menu = st.sidebar.radio("MENU PRINCIPAL", options_menu, index=index_actuel)
 st.session_state['page_active'] = menu
 
+# --- ONGLET 0 : TABLEAU DE BORD (digest quotidien + relance dormants) ---
+if st.session_state['page_active'] == "🧭 TABLEAU DE BORD":
+    st.header("🧭 Tableau de Bord — Synthèse Quotidienne")
+    st.caption("Généré à partir des données existantes — aucune action n'est prise automatiquement, tout reste à valider par vous.")
+
+    digest = generer_digest_quotidien()
+
+    col_d1, col_d2, col_d3 = st.columns(3)
+    with col_d1: st.metric("🔔 Alertes de matching non lues", digest["alertes_non_lues"])
+    with col_d2: st.metric("🩺 Visites médecine < 15 jours", len(digest["visites_medecine_proches"]))
+    with col_d3: st.metric("⏳ Fins de contrat < 7 jours", len(digest["fins_de_contrat_proches"]))
+
+    st.markdown("---")
+
+    col_alertes_dig, col_dormants_dig = st.columns(2)
+
+    with col_alertes_dig:
+        st.subheader("🩺 Échéances à surveiller")
+        if digest["visites_medecine_proches"]:
+            for nom_m, date_m in digest["visites_medecine_proches"]:
+                st.markdown(f"- **{nom_m}** — visite médicale limite le {date_m}")
+        else:
+            st.caption("Aucune visite médicale urgente.")
+        if digest["fins_de_contrat_proches"]:
+            st.markdown("**Fins de mission proches :**")
+            for nom_f, date_f, entr_f in digest["fins_de_contrat_proches"]:
+                st.markdown(f"- **{nom_f}** chez {entr_f} — fin le {date_f}")
+
+    with col_dormants_dig:
+        st.subheader("💤 Candidats dormants (Disponible depuis > 30 jours)")
+        if not digest["candidats_dormants"]:
+            st.caption("Aucun candidat dormant détecté.")
+        else:
+            for cand_id_dorm, nom_dorm, poste_dorm in digest["candidats_dormants"]:
+                with st.container():
+                    st.markdown(f"**{nom_dorm}** — {poste_dorm or 'Poste non précisé'}")
+                    if st.button(f"✍️ Générer un brouillon de relance", key=f"brouillon_{cand_id_dorm}"):
+                        if not peut_utiliser_ia(st.session_state.get("user_email")):
+                            st.error("⚠️ Quota IA mensuel atteint.")
+                        else:
+                            with st.spinner("Rédaction du brouillon..."):
+                                brouillon = generer_brouillon_relance(nom_dorm, poste_dorm or "un poste correspondant à son profil")
+                            incrémenter_quota_ia(st.session_state.get("user_email"))
+                            st.session_state[f"brouillon_relance_{cand_id_dorm}"] = brouillon
+
+                    if st.session_state.get(f"brouillon_relance_{cand_id_dorm}"):
+                        st.markdown(f"""<div style="background-color:#262730; padding:14px; border-radius:8px; color:white; white-space:pre-wrap; font-size:13px;">{st.session_state[f"brouillon_relance_{cand_id_dorm}"]}</div>""", unsafe_allow_html=True)
+                        c.execute("SELECT competences FROM candidats WHERE id = ?", (cand_id_dorm,))
+                        coord_row = c.fetchone()
+                        email_dorm = extraire_email(coord_row[0]) if coord_row and coord_row[0] else None
+                        if email_dorm:
+                            mailto_dorm = f"mailto:{email_dorm}?subject={urllib.parse.quote('Toujours disponible ?')}&body={urllib.parse.quote(st.session_state[f'brouillon_relance_{cand_id_dorm}'])}"
+                            st.link_button("✉️ Ouvrir dans mon client mail pour envoyer", mailto_dorm, use_container_width=True)
+                        else:
+                            st.caption("⚠️ Aucun e-mail détecté pour ce candidat — envoi manuel nécessaire.")
+                    st.markdown("---")
+
 # --- ONGLET 1 : CONSULTATION DU VIVIER ---
-if st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
+elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
     st.header("🗃️ Gestion et Pilotage du Vivier Interne")
     
     try:
@@ -858,7 +1430,119 @@ if st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
     with col_kpi1: st.metric(label="👥 Total Talents en Base", value=total_cand)
     with col_kpi2: st.metric(label="🟢 Profils Disponibles", value=dispo_cand)
     with col_kpi3: st.metric(label="🔵 En Mission / Placement", value=mission_cand)
-        
+
+    st.markdown("---")
+    with st.expander("🧠 Nouvel Agent IA — Analyse enrichie d'un CV (sans offre de référence)", expanded=False):
+        st.caption("Diplômes, compétences dures, compétences transférables justifiées, profil RIASEC et métiers cibles — enregistrés automatiquement dans le vivier.")
+        fichier_cv_agent = st.file_uploader("CV au format PDF :", type=["pdf"], key="uploader_cv_agent")
+        secteur_cv_agent = st.selectbox("Secteur d'affectation :", LISTE_SECTEURS[1:], key="secteur_cv_agent")
+
+        if st.button("🚀 Lancer l'agent d'analyse", key="btn_agent_cv"):
+            if not fichier_cv_agent:
+                st.error("⚠️ Merci de déposer un CV au format PDF.")
+            elif not peut_utiliser_ia(st.session_state.get("user_email")):
+                st.error("⚠️ Vous avez atteint votre quota mensuel de requêtes IA. Contactez l'administrateur pour débloquer votre accès.")
+            else:
+                try:
+                    reader_agent = PdfReader(fichier_cv_agent)
+                    texte_cv_agent = "".join([p.extract_text() for p in reader_agent.pages if p.extract_text()])
+                    with st.spinner("Analyse en cours par l'agent IA..."):
+                        resultat_agent = analyser_cv_avec_agent(texte_cv_agent, secteur_cv_agent)
+                    incrémenter_quota_ia(st.session_state.get("user_email"))
+                    st.session_state["dernier_rapport_agent"] = resultat_agent
+                    st.success("✅ Analyse terminée et candidat enregistré dans le vivier !")
+                except Exception as e:
+                    st.error(f"Erreur lors de l'analyse : {e}")
+
+        # --- RAPPORT DÉTAILLÉ STYLÉ (même codes visuels que le module de matching) ---
+        if st.session_state.get("dernier_rapport_agent"):
+            d = st.session_state["dernier_rapport_agent"].get("donnees_structurees") or {}
+            compte_rendu_txt = st.session_state["dernier_rapport_agent"].get("compte_rendu", "")
+
+            nom_cand = d.get("nom_complet", "Candidat")
+            score = int(d.get("pourcentage_adequation", 0) or 0)
+            metiers = d.get("metiers_cibles", [])
+            hard_skills = d.get("hard_skills", [])
+            diplomes = d.get("diplomes", [])
+            transferables = d.get("soft_skills_transferables", [])
+            type_dom = d.get("riasec_type_dominant", "")
+            types_sec = d.get("riasec_types_secondaires", [])
+            traits = d.get("riasec_traits_deduits", [])
+
+            if score >= 70:
+                couleur_badge = "#2e7d32"  # vert
+            elif score >= 40:
+                couleur_badge = "#f59e0b"  # orange
+            else:
+                couleur_badge = "#c53030"  # rouge
+
+            st.markdown(f"""
+                <div style="background-color: #2d3748; border-radius: 10px; padding: 22px; margin-top: 18px; margin-bottom: 14px; border-left: 5px solid {couleur_badge};">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <span style="font-size: 22px; font-weight: 700; color: #ffffff;">🧑‍💼 {nom_cand}</span>
+                        <span style="background-color: {couleur_badge}; color: white; padding: 6px 18px; border-radius: 20px; font-weight: 700; font-size: 16px;">{score}%</span>
+                    </div>
+                    <div style="color: #a3b1cc; font-size: 13px; margin-top: 4px;">Adéquation globale du profil — secteur {secteur_cv_agent}</div>
+                </div>
+            """, unsafe_allow_html=True)
+
+            st.caption("📈 Adéquation globale estimée")
+            st.progress(min(1.0, score / 100))
+
+            if metiers:
+                st.markdown("**🎯 Métiers cibles recommandés**")
+                st.markdown(" ".join([
+                    f'<span style="background-color:#374151; color:#e2e8f0; padding:5px 12px; border-radius:14px; margin-right:6px; font-size:13px; display:inline-block; margin-bottom:6px;">{m}</span>'
+                    for m in metiers
+                ]), unsafe_allow_html=True)
+
+            st.markdown("---")
+            col_rapport_gauche, col_rapport_droite = st.columns(2)
+
+            with col_rapport_gauche:
+                st.markdown("##### 🎓 Diplômes & formations")
+                if diplomes:
+                    for dip in diplomes:
+                        st.markdown(f"- {dip}")
+                else:
+                    st.caption("Non renseigné dans le CV.")
+
+                st.markdown("##### 🛠️ Compétences dures")
+                if hard_skills:
+                    for hs in hard_skills:
+                        st.markdown(f"- {hs}")
+                else:
+                    st.caption("Non renseigné dans le CV.")
+
+            with col_rapport_droite:
+                st.markdown("##### 🌱 Compétences transférables")
+                if transferables:
+                    for comp in transferables:
+                        st.markdown(f"- {comp}")
+                else:
+                    st.caption("Aucune compétence transférable notable détectée.")
+
+                st.markdown("##### 🧭 Profil de personnalité (RIASEC)")
+                if type_dom:
+                    st.markdown(f"**Type dominant :** {type_dom}")
+                if types_sec:
+                    st.markdown(f"**Types secondaires :** {', '.join(types_sec)}")
+                if traits:
+                    for trait in traits:
+                        st.markdown(f"- {trait}")
+
+            st.markdown("---")
+            st.markdown("##### 📝 Compte-rendu de l'agent IA")
+            st.markdown(f"""
+                <div style="background-color: #1a202c; padding: 18px; border-radius: 10px; color: #e2e8f0; white-space: pre-wrap; line-height: 1.6;">
+                    {compte_rendu_txt}
+                </div>
+            """, unsafe_allow_html=True)
+
+            if st.button("🗑️ Effacer ce rapport", key="btn_clear_rapport_agent"):
+                del st.session_state["dernier_rapport_agent"]
+                st.rerun()
+
     st.markdown("---")
     st.subheader("🔍 Filtrage des Talents par Secteur d'Activité")
     secteur_filtre = st.selectbox("Sélectionnez le secteur à afficher :", LISTE_SECTEURS)
@@ -1179,9 +1863,9 @@ elif st.session_state['page_active'] == "🎯 MATCHING IA OFFRES & CV":
         else:
             try:
                 for cand in st.session_state['derniers_matchs']:
-                    c.execute("""INSERT INTO candidats (nom, poste, competences, statut, categorie_ia, avis_ia, score_matching, secteur_metier, cv_texte) 
-                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                              (cand["nom"], "Profil Analysé", f"{cand['coordonnees']} | {cand['competences']}", "Nouveau", "À Classer", cand["justification"], f"{cand['score']} %", secteur_pour_import, cand.get("cv_texte", "")))
+                    c.execute("""INSERT INTO candidats (nom, poste, competences, statut, categorie_ia, avis_ia, score_matching, secteur_metier, cv_texte, date_ajout) 
+                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                              (cand["nom"], "Profil Analysé", f"{cand['coordonnees']} | {cand['competences']}", "Nouveau", "À Classer", cand["justification"], f"{cand['score']} %", secteur_pour_import, cand.get("cv_texte", ""), datetime.datetime.now().isoformat()))
                 st.success(f"✅ Candidat(s) enregistré(s) dans le secteur '{secteur_pour_import}' !")
                 st.session_state['derniers_matchs'] = []
                 st.rerun()
@@ -1446,8 +2130,42 @@ elif st.session_state['page_active'] == "🤝 MATCHING & OPPORTUNITÉS":
         col_besoin, col_vivier = st.columns(2)
         with col_besoin:
             secteur_besoin = st.selectbox("Secteur métier :", LISTE_SECTEURS, key="secteur_match")
+            entreprise_besoin = st.text_input("Entreprise cliente :", key="entreprise_match")
             besoin_details = st.text_area("Détails du poste recherchés :", height=150, key="details_match_text")
-            
+            st.caption("💾 Enregistrer active la veille automatique : chaque nouveau candidat ajouté au vivier sera comparé à ce besoin et générera une alerte si le profil correspond.")
+            if st.button("💾 Enregistrer ce besoin & activer les alertes", use_container_width=True):
+                if not besoin_details or secteur_besoin == "Tous" or not entreprise_besoin:
+                    st.error("⚠️ Entreprise, secteur et détails du poste requis.")
+                elif not peut_utiliser_ia(st.session_state.get("user_email")):
+                    st.error("⚠️ Vous avez atteint votre quota mensuel de requêtes IA. Contactez l'administrateur pour débloquer votre accès.")
+                else:
+                    c.execute(
+                        "INSERT INTO besoins_clients (entreprise, secteur, description, date_creation) VALUES (?, ?, ?, ?)",
+                        (entreprise_besoin, secteur_besoin, besoin_details, datetime.datetime.now().isoformat()),
+                    )
+                    conn.commit()
+                    besoin_id_nouveau = c.lastrowid
+                    with st.spinner("Comparaison avec le vivier existant..."):
+                        alertes = matcher_besoin_vs_vivier(besoin_id_nouveau, secteur_besoin, besoin_details)
+                    incrémenter_quota_ia(st.session_state.get("user_email"))
+                    st.success(f"✅ Besoin enregistré et veille activée pour '{entreprise_besoin}'.")
+                    if alertes:
+                        st.info(f"🔔 {len(alertes)} candidat(s) du vivier correspond(ent) déjà à ce besoin — voir le panneau Alertes dans la barre latérale.")
+                        st.session_state.pop("suggestion_sourcing", None)
+                    else:
+                        # Aucun match interne suffisant : l'IA se contente de SUGGÉRER le sourcing
+                        # externe, elle ne le lance jamais elle-même — le clic reste humain.
+                        st.session_state["suggestion_sourcing"] = {"poste": secteur_besoin, "entreprise": entreprise_besoin}
+                    st.rerun()
+
+            if st.session_state.get("suggestion_sourcing"):
+                sugg = st.session_state["suggestion_sourcing"]
+                st.warning(f"💡 Aucun candidat du vivier ne correspond suffisamment au besoin de **{sugg['entreprise']}**.")
+                if st.button("🔍 Lancer un sourcing externe pour ce besoin", use_container_width=True):
+                    st.session_state['page_active'] = "🏹 SOURCING EXTERNE & CHASSE"
+                    st.session_state.pop("suggestion_sourcing", None)
+                    st.rerun()
+
         with col_vivier:
             if st.button("🚀 LANCER LE MATCHING", type="primary", use_container_width=True):
                 # 1. Vérification du quota IA
@@ -1574,10 +2292,61 @@ elif st.session_state['page_active'] == "🖥️ TRI & CLASSEMENT IA":
                 st.error("⚠️ Identifiants manquants.")
             else:
                 fichier_recupere = relever_et_analyser_emails(email_utilisateur, password_email, serveur_imap)
-                if fichier_recupere: 
+                if fichier_recupere:
                     st.success(f"📎 Nouveau CV PDF récupéré : {os.path.basename(fichier_recupere)}")
+                    # Auto-analyse en PRÉVISUALISATION uniquement : ce CV n'a pas été choisi
+                    # individuellement par un humain (contrairement à l'upload manuel), donc
+                    # aucune écriture en base tant qu'il n'a pas été validé ci-dessous.
+                    try:
+                        reader_mail = PdfReader(fichier_recupere)
+                        texte_cv_mail = "".join([p.extract_text() for p in reader_mail.pages if p.extract_text()])
+                        with st.spinner("Analyse automatique en aperçu..."):
+                            apercu = analyser_cv_preview(texte_cv_mail)
+                        st.session_state["apercu_cv_mail"] = apercu
+                        st.session_state["texte_cv_mail"] = texte_cv_mail
+                    except Exception as e:
+                        st.error(f"Erreur lors de l'analyse de l'aperçu : {e}")
                 else: 
-                    st.info("📬 Aucun nouveau message non lu avec pièce jointe PDF trouvé.")# --- 🤝 ONGLET : MATCHING & OPPORTUNITÉS (COMPLÉTÉ AVEC QUOTAS IA) ---
+                    st.info("📬 Aucun nouveau message non lu avec pièce jointe PDF trouvé.")
+
+        if st.session_state.get("apercu_cv_mail"):
+            apercu = st.session_state["apercu_cv_mail"]
+            st.markdown("---")
+            st.markdown(f"##### 🧠 Aperçu — {apercu.get('nom_complet', 'Candidat')} *(non enregistré, à valider)*")
+            st.caption(f"Adéquation estimée : {apercu.get('pourcentage_adequation', 0)}% — Métiers cibles : {', '.join(apercu.get('metiers_cibles', []))}")
+            with st.expander("Voir le compte-rendu complet avant validation"):
+                st.markdown(apercu.get("compte_rendu", ""))
+
+            secteur_cv_mail = st.selectbox("Secteur d'affectation :", LISTE_SECTEURS[1:], key="secteur_cv_mail")
+            col_valid_mail, col_reject_mail = st.columns(2)
+            with col_valid_mail:
+                if st.button("✅ Confirmer l'ajout au vivier", key="btn_confirmer_cv_mail", use_container_width=True, type="primary"):
+                    try:
+                        resultat_mail = _save_candidate_to_sqlite(
+                            nom_complet=apercu.get("nom_complet", "Inconnu"),
+                            diplomes=apercu.get("diplomes", []),
+                            hard_skills=apercu.get("hard_skills", []),
+                            soft_skills_transferables=apercu.get("soft_skills_transferables", []),
+                            riasec_type_dominant=apercu.get("riasec_type_dominant", ""),
+                            riasec_types_secondaires=apercu.get("riasec_types_secondaires", []),
+                            riasec_traits_deduits=apercu.get("riasec_traits_deduits", []),
+                            metiers_cibles=apercu.get("metiers_cibles", []),
+                            pourcentage_adequation=apercu.get("pourcentage_adequation", 0),
+                            compte_rendu=apercu.get("compte_rendu", ""),
+                            secteur_metier=secteur_cv_mail,
+                            cv_texte=st.session_state.get("texte_cv_mail", ""),
+                        )
+                        st.success(resultat_mail.get("message", "Candidat ajouté."))
+                        del st.session_state["apercu_cv_mail"]
+                        st.session_state.pop("texte_cv_mail", None)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erreur lors de l'enregistrement : {e}")
+            with col_reject_mail:
+                if st.button("❌ Ignorer ce CV", key="btn_rejeter_cv_mail", use_container_width=True):
+                    del st.session_state["apercu_cv_mail"]
+                    st.session_state.pop("texte_cv_mail", None)
+                    st.rerun()# --- 🤝 ONGLET : MATCHING & OPPORTUNITÉS (COMPLÉTÉ AVEC QUOTAS IA) ---
 elif st.session_state['page_active'] == "🤝 MATCHING & OPPORTUNITÉS":
     st.header("🎯 Intelligence de Matching & Opportunités")
     tab_classique, tab_inverse = st.tabs(["📋 Matching Classique (Besoins vs Candidats)", "🚀 Matching Inversé (Placement Proactif)"])
@@ -1961,6 +2730,15 @@ elif st.session_state['page_active'] == "📋 GESTION ADMINISTRATIVE & RH":
                 c.execute("UPDATE candidats SET statut = ?, poste = ? WHERE nom = ?", ("En mission", saisie_poste, salarie_clean))
                 conn.commit()
 
+                # --- Veille réglementaire proactive : suggestion générée automatiquement,
+                # stockée à part, JAMAIS injectée dans les notes officielles sans validation
+                # humaine explicite (voir onglet Suivi Médecine du Travail).
+                id_nouveau_contrat = c.lastrowid
+                suggestion_med = generer_suggestion_medecine(saisie_poste)
+                if suggestion_med:
+                    c.execute("UPDATE contrats SET suggestion_ia_medecine = ? WHERE id = ?", (suggestion_med, id_nouveau_contrat))
+                    conn.commit()
+
                 # Création du PDF pro complet
                 pdf = FPDF()
                 pdf.add_page()
@@ -2026,12 +2804,34 @@ Signature de l'employeur                 Signature du salarié
         else:
             try:
                 df_contrats = pd.read_sql_query(f"""
-                    SELECT id, candidat_nom, {entreprise_col}, date_debut, date_fin, date_limite_medecine, statut_medecine, suivi_medical_notes 
+                    SELECT id, candidat_nom, {entreprise_col}, date_debut, date_fin, date_limite_medecine, statut_medecine, suivi_medical_notes, suggestion_ia_medecine 
                     FROM contrats 
                     WHERE candidat_nom = '{candidat_selectionne_filtre.replace("'", "''")}'
                 """, conn)
                 
                 if not df_contrats.empty:
+                    # --- Suggestions générées automatiquement à la création du contrat :
+                    # jamais injectées seules, toujours soumises à validation humaine ici.
+                    for _, ligne_sugg in df_contrats.iterrows():
+                        if ligne_sugg.get("suggestion_ia_medecine"):
+                            st.warning(f"🤖 **Suggestion IA non validée** générée à la création du contrat de {ligne_sugg['candidat_nom']} :")
+                            st.markdown(ligne_sugg["suggestion_ia_medecine"])
+                            col_valid_sugg, col_reject_sugg = st.columns(2)
+                            with col_valid_sugg:
+                                if st.button("✅ Valider et injecter dans les notes officielles", key=f"valider_sugg_{ligne_sugg['id']}", use_container_width=True):
+                                    notes_actuelles = ligne_sugg.get("suivi_medical_notes") or ""
+                                    nouvelles_notes_validees = f"{notes_actuelles}\n- [IA - validé par un humain] {ligne_sugg['suggestion_ia_medecine']}".strip()
+                                    c.execute("UPDATE contrats SET suivi_medical_notes = ?, suggestion_ia_medecine = NULL WHERE id = ?", (nouvelles_notes_validees, int(ligne_sugg["id"])))
+                                    conn.commit()
+                                    st.rerun()
+                            with col_reject_sugg:
+                                if st.button("❌ Rejeter cette suggestion", key=f"rejeter_sugg_{ligne_sugg['id']}", use_container_width=True):
+                                    c.execute("UPDATE contrats SET suggestion_ia_medecine = NULL WHERE id = ?", (int(ligne_sugg["id"]),))
+                                    conn.commit()
+                                    st.rerun()
+                            st.markdown("---")
+
+                    df_contrats = df_contrats.drop(columns=["suggestion_ia_medecine"])
                     df_contrats.columns = ["id", "Salarié", "Entreprise", "Début Mission", "Fin Mission", "Date Limite Visite", "Statut Visite", "Notes Médicales / Commentaires"]
                     
                     st.markdown('<p style="color: #cbd5e0; font-size: 0.9rem; margin-top: 10px;">💡 double-cliquez dans les cases ci-dessous pour éditer les notes, ajuster les périodes et sauvegarder.</p>', unsafe_allow_html=True)
