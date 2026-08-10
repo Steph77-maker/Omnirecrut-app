@@ -474,22 +474,27 @@ def _save_candidate_to_sqlite(
     diplomes: list,
     hard_skills: list,
     soft_skills_transferables: list,
-    riasec_type_dominant: str,
-    riasec_types_secondaires: list,
-    riasec_traits_deduits: list,
+    traits_dominants: list,
+    indices_parcours_pro: str,
+    indices_centres_interet: str,
+    coherence_projet_pro: str,
     metiers_cibles: list,
     pourcentage_adequation: int,
     compte_rendu: str,
     secteur_metier: str = "Non spécifié",
     cv_texte: str = "",
 ) -> dict:
-    """Tool exécuté par l'agent : enregistre le profil enrichi dans la table candidats existante."""
+    """Tool exécuté par l'agent : enregistre le profil enrichi dans la table candidats existante.
+    NB : la colonne 'profil_riasec' est conservée pour compatibilité base de données, mais stocke
+    désormais un profil comportemental basé sur le parcours et les centres d'intérêt (pas un test
+    RIASEC formel)."""
     poste_cible = metiers_cibles[0] if metiers_cibles else "Profil Analysé"
     competences_resume = ", ".join(hard_skills + diplomes) if (hard_skills or diplomes) else "Non spécifié"
-    profil_riasec = {
-        "type_dominant": riasec_type_dominant,
-        "types_secondaires": riasec_types_secondaires,
-        "traits_deduits": riasec_traits_deduits,
+    profil_comportemental = {
+        "traits_dominants": traits_dominants,
+        "indices_parcours_pro": indices_parcours_pro,
+        "indices_centres_interet": indices_centres_interet,
+        "coherence_projet_pro": coherence_projet_pro,
     }
 
     c.execute(
@@ -502,13 +507,13 @@ def _save_candidate_to_sqlite(
             poste_cible,
             competences_resume,
             "Nouveau",
-            riasec_type_dominant or "À Classer",
+            (traits_dominants[0] if traits_dominants else "À Classer"),
             compte_rendu,
             f"{pourcentage_adequation} %",
             secteur_metier,
             cv_texte,
             json.dumps(soft_skills_transferables, ensure_ascii=False),
-            json.dumps(profil_riasec, ensure_ascii=False),
+            json.dumps(profil_comportemental, ensure_ascii=False),
             json.dumps(metiers_cibles, ensure_ascii=False),
             datetime.datetime.now().isoformat(),
         ),
@@ -564,17 +569,36 @@ _tool_save_candidate = genai.protos.Tool(
                             "'compétence — issue de [expérience précise du CV] — [pourquoi c'est un atout]'."
                         ),
                     ),
-                    "riasec_type_dominant": genai.protos.Schema(
+                    "traits_dominants": genai.protos.Schema(
+                        type=genai.protos.Type.ARRAY,
+                        items=genai.protos.Schema(type=genai.protos.Type.STRING),
+                        description=(
+                            "3 à 5 traits de personnalité/savoir-être plausibles (ex: 'autonomie', "
+                            "'esprit d'équipe', 'rigueur'), déduits du parcours et des centres d'intérêt — "
+                            "jamais une liste de compétences techniques déjà citées ailleurs."
+                        ),
+                    ),
+                    "indices_parcours_pro": genai.protos.Schema(
                         type=genai.protos.Type.STRING,
-                        description="Un des 6 types RIASEC : Réaliste, Investigateur, Artistique, Social, Entreprenant, Conventionnel.",
+                        description=(
+                            "Justification courte : quels choix de postes, missions ou évolutions du "
+                            "parcours professionnel appuient les traits dominants identifiés."
+                        ),
                     ),
-                    "riasec_types_secondaires": genai.protos.Schema(
-                        type=genai.protos.Type.ARRAY,
-                        items=genai.protos.Schema(type=genai.protos.Type.STRING),
+                    "indices_centres_interet": genai.protos.Schema(
+                        type=genai.protos.Type.STRING,
+                        description=(
+                            "Justification courte basée sur les loisirs/centres d'intérêt/engagements "
+                            "personnels déclarés dans le CV. Si le CV n'en mentionne aucun, l'indiquer "
+                            "explicitement plutôt que d'inventer."
+                        ),
                     ),
-                    "riasec_traits_deduits": genai.protos.Schema(
-                        type=genai.protos.Type.ARRAY,
-                        items=genai.protos.Schema(type=genai.protos.Type.STRING),
+                    "coherence_projet_pro": genai.protos.Schema(
+                        type=genai.protos.Type.STRING,
+                        description=(
+                            "Évaluation courte de la logique globale du parcours (reconversion cohérente, "
+                            "montée en compétences progressive, fils conducteurs entre les expériences, etc.)."
+                        ),
                     ),
                     "metiers_cibles": genai.protos.Schema(
                         type=genai.protos.Type.ARRAY,
@@ -585,8 +609,8 @@ _tool_save_candidate = genai.protos.Tool(
                 },
                 required=[
                     "nom_complet", "diplomes", "hard_skills", "soft_skills_transferables",
-                    "riasec_type_dominant", "riasec_types_secondaires", "riasec_traits_deduits",
-                    "metiers_cibles", "pourcentage_adequation", "compte_rendu",
+                    "traits_dominants", "indices_parcours_pro", "indices_centres_interet",
+                    "coherence_projet_pro", "metiers_cibles", "pourcentage_adequation", "compte_rendu",
                 ],
             ),
         )
@@ -604,22 +628,41 @@ Procède dans cet ordre exact :
 2. COMPÉTENCES TRANSFÉRABLES : pour chaque expérience (même hors secteur cible), identifie les
    compétences généralistes/transversales. Formule chaque compétence en UNE SEULE phrase au format
    'compétence — issue de [expérience précise du CV] — [pourquoi c'est un atout dans un nouveau métier]'.
-3. PROFIL RIASEC : analyse subtilement les centres d'intérêt et le style rédactionnel pour déduire
-   un type RIASEC dominant, 1-2 types secondaires, et des traits professionnels plausibles — formulés
-   comme des hypothèses argumentées, jamais comme un diagnostic définitif.
+3. INDICES DE PERSONNALITÉ (parcours + centres d'intérêt) : SANS jamais nommer ni faire référence à
+   un test ou modèle psychométrique connu, déduis 3 à 5 traits de personnalité/savoir-être plausibles
+   à partir de deux sources distinctes du CV :
+   a) le PARCOURS PROFESSIONNEL : cohérence des transitions, type de missions recherchées ou obtenues
+      (encadrement, autonomie, technique, relationnel), rythme et nature des évolutions de poste ;
+   b) les CENTRES D'INTÉRÊT ET ENGAGEMENTS PERSONNELS explicitement mentionnés dans le CV (loisirs,
+      sport, bénévolat, activités associatives ou créatives). Si le CV n'en mentionne aucun, dis-le
+      explicitement plutôt que d'en inventer.
+   Utilise ces repères de lecture, à croiser avec le contenu réel du CV (jamais appliqués mécaniquement) :
+   - sport collectif, associatif, bénévolat/encadrement → esprit d'équipe, sens du service, leadership
+   - activités créatives (musique, arts, écriture) → créativité, sensibilité, autonomie de pensée
+   - activités techniques/solitaires (bricolage, informatique, lecture spécialisée) → rigueur, goût du
+     détail, autonomie
+   - sport individuel de performance → discipline, dépassement de soi
+   - stabilité vs diversité des expériences → capacité d'adaptation vs recherche de stabilité
+   Pour chaque trait retenu, distingue clairement ce qui vient du parcours pro de ce qui vient des
+   centres d'intérêt (deux champs séparés), et ajoute une courte évaluation de la cohérence globale
+   du projet professionnel (reconversion logique, montée en compétences, fils conducteurs). Formule
+   toujours ces éléments comme des hypothèses argumentées à valider en entretien, jamais comme un
+   diagnostic définitif.
 4. SYNTHÈSE & MÉTIERS CIBLES : rédige un compte-rendu détaillé et structuré (plusieurs paragraphes,
    pas un simple résumé de 3-4 lignes) qui reprend et argumente chacun des points précédents :
    le profil général du candidat, l'analyse de son parcours, la lecture de ses compétences
-   transférables, l'interprétation du profil RIASEC, puis la logique derrière les métiers cibles
-   proposés. Ce texte doit se suffire à lui-même pour qu'un recruteur comprenne le raisonnement
-   sans avoir à relire le CV. Propose ensuite une liste de métiers cibles cohérents classés par
-   pertinence, et calcule un pourcentage d'adéquation global argumenté.
+   transférables, les indices de personnalité dégagés du parcours et des centres d'intérêt, puis la
+   logique derrière les métiers cibles proposés. Ce texte doit se suffire à lui-même pour qu'un
+   recruteur comprenne le raisonnement sans avoir à relire le CV. Propose ensuite une liste de
+   métiers cibles cohérents classés par pertinence, et calcule un pourcentage d'adéquation global
+   argumenté.
 5. ENREGISTREMENT : appelle SYSTÉMATIQUEMENT et une seule fois la fonction save_candidate_to_sqlite
    avec tous les champs remplis (champs à plat, pas d'objets imbriqués), une fois l'analyse complète.
 
 Contraintes : n'invente jamais un diplôme, une compétence ou une expérience absente du CV ; si une
 information est ambiguë ou manquante, dis-le explicitement plutôt que de la deviner. Reste neutre et
-professionnel, sans jugement de valeur sur le parcours du candidat.
+professionnel, sans jugement de valeur sur le parcours du candidat. Les indices de personnalité sont
+des pistes de lecture, pas un verdict — ne jamais les présenter comme un résultat de test validé.
 """
 
 _agent_model = genai.GenerativeModel(
@@ -923,8 +966,8 @@ def analyser_cv_preview(texte_cv: str):
 
 Renvoie UNIQUEMENT un objet JSON valide (aucun texte autour, aucun appel de fonction) avec
 exactement les clés : nom_complet, diplomes, hard_skills, soft_skills_transferables,
-riasec_type_dominant, riasec_types_secondaires, riasec_traits_deduits, metiers_cibles,
-pourcentage_adequation, compte_rendu.
+traits_dominants, indices_parcours_pro, indices_centres_interet, coherence_projet_pro,
+metiers_cibles, pourcentage_adequation, compte_rendu.
 
 CV à analyser :
 {texte_cv}"""
@@ -1433,7 +1476,7 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
 
     st.markdown("---")
     with st.expander("🧠 Nouvel Agent IA — Analyse enrichie d'un CV (sans offre de référence)", expanded=False):
-        st.caption("Diplômes, compétences dures, compétences transférables justifiées, profil RIASEC et métiers cibles — enregistrés automatiquement dans le vivier.")
+        st.caption("Diplômes, compétences dures, compétences transférables justifiées, indices de personnalité (parcours & centres d'intérêt) et métiers cibles — enregistrés automatiquement dans le vivier.")
         fichier_cv_agent = st.file_uploader("CV au format PDF :", type=["pdf"], key="uploader_cv_agent")
         secteur_cv_agent = st.selectbox("Secteur d'affectation :", LISTE_SECTEURS[1:], key="secteur_cv_agent")
 
@@ -1465,9 +1508,10 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
             hard_skills = d.get("hard_skills", [])
             diplomes = d.get("diplomes", [])
             transferables = d.get("soft_skills_transferables", [])
-            type_dom = d.get("riasec_type_dominant", "")
-            types_sec = d.get("riasec_types_secondaires", [])
-            traits = d.get("riasec_traits_deduits", [])
+            traits_dom = d.get("traits_dominants", [])
+            indices_parcours = d.get("indices_parcours_pro", "")
+            indices_interets = d.get("indices_centres_interet", "")
+            coherence = d.get("coherence_projet_pro", "")
 
             if score >= 70:
                 couleur_badge = "#2e7d32"  # vert
@@ -1522,14 +1566,19 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
                 else:
                     st.caption("Aucune compétence transférable notable détectée.")
 
-                st.markdown("##### 🧭 Profil de personnalité (RIASEC)")
-                if type_dom:
-                    st.markdown(f"**Type dominant :** {type_dom}")
-                if types_sec:
-                    st.markdown(f"**Types secondaires :** {', '.join(types_sec)}")
-                if traits:
-                    for trait in traits:
-                        st.markdown(f"- {trait}")
+                st.markdown("##### 🧭 Indices de personnalité (parcours &amp; centres d'intérêt)")
+                if traits_dom:
+                    st.markdown(" ".join([
+                        f'<span style="background-color:#374151; color:#e2e8f0; padding:4px 10px; border-radius:12px; margin-right:6px; font-size:12px; display:inline-block; margin-bottom:6px;">{t}</span>'
+                        for t in traits_dom
+                    ]), unsafe_allow_html=True)
+                if indices_parcours:
+                    st.markdown(f"**Issus du parcours pro :** {indices_parcours}")
+                if indices_interets:
+                    st.markdown(f"**Issus des centres d'intérêt :** {indices_interets}")
+                if coherence:
+                    st.markdown(f"**Cohérence du projet pro :** {coherence}")
+                st.caption("💡 Indices déduits du CV, à valider en entretien — ne remplacent pas un échange direct avec le candidat.")
 
             st.markdown("---")
             st.markdown("##### 📝 Compte-rendu de l'agent IA")
@@ -2327,9 +2376,10 @@ elif st.session_state['page_active'] == "🖥️ TRI & CLASSEMENT IA":
                             diplomes=apercu.get("diplomes", []),
                             hard_skills=apercu.get("hard_skills", []),
                             soft_skills_transferables=apercu.get("soft_skills_transferables", []),
-                            riasec_type_dominant=apercu.get("riasec_type_dominant", ""),
-                            riasec_types_secondaires=apercu.get("riasec_types_secondaires", []),
-                            riasec_traits_deduits=apercu.get("riasec_traits_deduits", []),
+                            traits_dominants=apercu.get("traits_dominants", []),
+                            indices_parcours_pro=apercu.get("indices_parcours_pro", ""),
+                            indices_centres_interet=apercu.get("indices_centres_interet", ""),
+                            coherence_projet_pro=apercu.get("coherence_projet_pro", ""),
                             metiers_cibles=apercu.get("metiers_cibles", []),
                             pourcentage_adequation=apercu.get("pourcentage_adequation", 0),
                             compte_rendu=apercu.get("compte_rendu", ""),
