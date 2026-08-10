@@ -27,14 +27,12 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    input, textarea, select {
-        color: #ffffff !important;
-        background-color: #2d3748 !important;
-    }
-    div[data-baseweb="input"] input,
-    div[data-baseweb="textarea"] textarea,
-    div[data-baseweb="select"] div,
-    div[data-baseweb="datepicker"] input {
+    div[data-testid="stTextInput"] input,
+    div[data-testid="stTextArea"] textarea,
+    div[data-testid="stNumberInput"] input,
+    div[data-testid="stDateInput"] input,
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] > div,
+    div[data-testid="stMultiSelect"] div[data-baseweb="select"] > div {
         color: #ffffff !important;
         background-color: #2d3748 !important;
         border: 1px solid #4a5568 !important;
@@ -310,8 +308,7 @@ def check_password():
         <style>
         .stApp { background-color: #1a202c; color: #e2e8f0; }
         label, [data-testid="stWidgetLabel"] p { color: #ffffff !important; font-weight: 600 !important; }
-        input, textarea { background-color: #2d3748 !important; color: #ffffff !important; }
-        div[data-baseweb="input"] input { background-color: #2d3748 !important; color: #ffffff !important; border: 1px solid #4a5568 !important; }
+        div[data-testid="stTextInput"] input, div[data-testid="stTextArea"] textarea { background-color: #2d3748 !important; color: #ffffff !important; border: 1px solid #4a5568 !important; }
         </style>
     """,
         unsafe_allow_html=True,
@@ -1125,8 +1122,12 @@ st.markdown(
     label, [data-testid="stWidgetLabel"] p { color: #ffffff !important; font-weight: 600 !important; font-size: 1rem !important; }
     div.stButton > button:first-child { background-color: #fb8500 !important; color: #111622 !important; font-weight: bold; border: none; border-radius: 4px; padding: 0.5rem 2rem; }
     div.stButton > button:first-child:hover { background-color: #ffb703 !important; color: #111622 !important; }
-    input, textarea, select { background-color: #2d3748 !important; color: #ffffff !important; }
-    div[data-baseweb="input"] input, div[data-baseweb="textarea"] textarea, div[data-baseweb="select"] div, div[data-baseweb="datepicker"] input { background-color: #2d3748 !important; color: #ffffff !important; border: 1px solid #4a5568 !important; }
+    div[data-testid="stTextInput"] input,
+    div[data-testid="stTextArea"] textarea,
+    div[data-testid="stNumberInput"] input,
+    div[data-testid="stDateInput"] input,
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] > div,
+    div[data-testid="stMultiSelect"] div[data-baseweb="select"] > div { background-color: #2d3748 !important; color: #ffffff !important; border: 1px solid #4a5568 !important; }
     </style>
 """,
     unsafe_allow_html=True,
@@ -1613,13 +1614,20 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
 
                 df_vivier["Email_Brut"] = df_vivier["Coordonnées / Compétences"].apply(extraire_email)
                 df_vivier["Email"] = df_vivier["Email_Brut"].apply(lambda x: f"mailto:{x}" if x else None)
-
                 # Nettoyage robuste et extraction du vrai score global
                 df_vivier["Score_Affiche"] = df_vivier["Score Match"].apply(lambda x: f"{int(float(''.join([c for c in str(x) if c.isdigit() or c == '.'])))} %" if pd.notnull(x) and any(c.isdigit() for c in str(x)) else "0 %")
 
+                # L'Avis IA (compte-rendu complet, potentiellement plusieurs paragraphes) est
+                # illisible dans une cellule de grille : on garde le texte intégral à part
+                # (Avis_IA_Complet) et on n'affiche qu'un résumé court dans le tableau.
+                df_vivier["Avis_IA_Complet"] = df_vivier["Avis IA"]
+                df_vivier["Avis IA"] = df_vivier["Avis IA"].apply(
+                    lambda x: (str(x)[:140].rsplit(" ", 1)[0] + "…") if pd.notnull(x) and len(str(x)) > 140 else (x if pd.notnull(x) else "")
+                )
+
                 # Affichage du data_editor avec des largeurs maîtrisées pour éviter le scroll infini
                 edited_df = st.data_editor(
-                    df_vivier.drop(columns=["Email_Brut", "Score Match"]), 
+                    df_vivier.drop(columns=["Email_Brut", "Score Match", "Avis_IA_Complet"]), 
                     use_container_width=True, 
                     hide_index=True,
                     key="editor_vivier",
@@ -1631,7 +1639,7 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
                         "Statut": st.column_config.SelectboxColumn("Statut", options=["Disponible", "Non disponible", "En mission"], required=True),
                         "Catégorie": st.column_config.SelectboxColumn("Catégorie", options=["À Classer", "⭐ Top Profil", "✅ Profil Confirmé", "🌱 Junior / Débutant", "⏳ À Recontacter", "❌ Ne pas retenir"], required=True),
                         "Score_Affiche": st.column_config.TextColumn("Score Match 🎯", disabled=True, width="small"),
-                        "Avis IA": st.column_config.TextColumn("Avis IA 🤖", disabled=True, width="medium"),
+                        "Avis IA": st.column_config.TextColumn("Avis IA 🤖 (résumé)", disabled=True, width="medium", help="Résumé tronqué — voir le compte-rendu complet dans le panneau de suivi ci-dessous."),
                         "Secteur Métier": st.column_config.TextColumn("Secteur Métier", disabled=True),
                         "Email": st.column_config.LinkColumn("Action", display_text="✉️ Contacter")
                     }
@@ -1666,6 +1674,15 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
                     with col_info:
                         st.markdown(f"👤 **Profil :** {candidat_selectionne} — *{infos_candidat['Poste']}*")
                         st.markdown(f"📌 **Statut :** `{statut_actuel}` | **Score de correspondance :** `{score_suivi}`")
+
+                    avis_complet = infos_candidat.get("Avis_IA_Complet", "")
+                    if pd.notnull(avis_complet) and str(avis_complet).strip():
+                        with st.expander("🤖 Voir le compte-rendu IA complet"):
+                            st.markdown(f"""
+                                <div style="background-color: #1a202c; padding: 16px; border-radius: 8px; color: #e2e8f0; white-space: pre-wrap; line-height: 1.6;">
+                                    {avis_complet}
+                                </div>
+                            """, unsafe_allow_html=True)
                     
                     with col_bouton_urssaf:
                         if statut_actuel == "En mission":
