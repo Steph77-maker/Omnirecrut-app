@@ -9,7 +9,8 @@ import json
 import os
 import re
 import smtplib
-import sqlite3
+import psycopg2
+import psycopg2.extras
 import time
 import urllib.parse
 import bcrypt
@@ -18,6 +19,37 @@ import google.generativeai as genai
 import pandas as pd
 from pypdf import PdfReader
 import streamlit as st
+
+# ==============================================================================
+# --- CONNEXION SÉCURISÉE À SUPABASE (PostgreSQL) ---
+# Remplace l'ancienne base SQLite locale. L'URL de connexion est lue depuis
+# les secrets Streamlit (jamais codée en dur), au format attendu dans
+# .streamlit/secrets.toml :
+#
+#   [connections.supabase]
+#   url = "postgresql://postgres:VOTRE_MOT_DE_PASSE@db.xxxxxxxx.supabase.co:5432/postgres"
+#
+# (URL de connexion "Session pooler" ou directe, disponible dans
+# Supabase > Project Settings > Database > Connection string).
+#
+# st.cache_resource garantit qu'une seule connexion est ouverte et réutilisée
+# entre les reruns Streamlit, au lieu d'en recréer une à chaque appel comme
+# le faisait le code SQLite d'origine.
+# ==============================================================================
+@st.cache_resource(show_spinner=False)
+def get_connection():
+    url = st.secrets["connections"]["supabase"]["url"]
+    conn_pg = psycopg2.connect(url)
+    # Autocommit : chaque instruction est validée immédiatement. C'est le choix
+    # le plus proche du comportement SQLite d'origine (isolation_level=None,
+    # càd autocommit) et surtout le plus sûr ici : de nombreux blocs du code
+    # font "try: c.execute(...) except Exception: pass" (ex. migrations de
+    # colonnes ALTER TABLE). En PostgreSQL, sans autocommit, une requête en
+    # échec invalide toute la transaction en cours tant qu'un ROLLBACK n'est
+    # pas exécuté — ce qui casserait les requêtes suivantes sur cette même
+    # connexion. L'autocommit évite ce piège sans toucher à la logique métier.
+    conn_pg.autocommit = True
+    return conn_pg
 
 # --- CONFIGURATION DU THÈME VISUEL (DOIT ÊTRE AU TOUT DÉBUT) ---
 st.set_page_config(
@@ -52,11 +84,10 @@ def peut_utiliser_ia(email_utilisateur):
         return True
     
     try:
-        conn_q = sqlite3.connect("recrutement_ia.db", check_same_thread=False)
+        conn_q = get_connection()
         c_q = conn_q.cursor()
-        c_q.execute("SELECT nb_requetes_ia, quota_max, statut_abonnement FROM utilisateurs WHERE email = ?", (email_utilisateur,))
+        c_q.execute("SELECT nb_requetes_ia, quota_max, statut_abonnement FROM utilisateurs WHERE email = %s", (email_utilisateur,))
         res = c_q.fetchone()
-        conn_q.close()
         
         if res:
             nb_actuel = res[0] if res[0] is not None else 0
@@ -74,22 +105,20 @@ def incrémenter_quota_ia(email_utilisateur):
     """Incrémente le compteur de requêtes IA de l'utilisateur."""
     if not st.session_state.get("is_admin") and email_utilisateur:
         try:
-            conn_q = sqlite3.connect("recrutement_ia.db", check_same_thread=False)
+            conn_q = get_connection()
             c_q = conn_q.cursor()
-            c_q.execute("UPDATE utilisateurs SET nb_requetes_ia = COALESCE(nb_requetes_ia, 0) + 1 WHERE email = ?", (email_utilisateur,))
+            c_q.execute("UPDATE utilisateurs SET nb_requetes_ia = COALESCE(nb_requetes_ia, 0) + 1 WHERE email = %s", (email_utilisateur,))
             conn_q.commit()
-            conn_q.close()
         except Exception:
             pass
 
 def reinitialiser_quota_ia(email_utilisateur):
     """Remet le compteur de requêtes IA d'un utilisateur à 0."""
     try:
-        conn_q = sqlite3.connect("recrutement_ia.db", check_same_thread=False)
+        conn_q = get_connection()
         c_q = conn_q.cursor()
-        c_q.execute("UPDATE utilisateurs SET nb_requetes_ia = 0 WHERE email = ?", (email_utilisateur,))
+        c_q.execute("UPDATE utilisateurs SET nb_requetes_ia = 0 WHERE email = %s", (email_utilisateur,))
         conn_q.commit()
-        conn_q.close()
         return True
     except Exception:
         return False
@@ -234,10 +263,10 @@ def check_password():
         st.session_state["user_config_email"] = {}
 
     try:
-        conn_auth = sqlite3.connect("recrutement_ia.db", check_same_thread=False)
+        conn_auth = get_connection()
         c_auth = conn_auth.cursor()
         c_auth.execute("""CREATE TABLE IF NOT EXISTS utilisateurs (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            id SERIAL PRIMARY KEY,
                             email TEXT UNIQUE,
                             password TEXT,
                             date_fin_essai TEXT,
@@ -274,7 +303,6 @@ def check_password():
                     "secrets de l'application (Streamlit Cloud > Settings > Secrets) avant "
                     "de continuer."
                 )
-                conn_auth.close()
                 st.stop()
 
             mdp_admin_hash = hacher_mdp(mdp_admin_clair)
@@ -283,7 +311,7 @@ def check_password():
             default_imap = st.secrets.get("EMAIL_IMAP", "imap.gmail.com")
             c_auth.execute(
                 """INSERT INTO utilisateurs (email, password, date_fin_essai, est_admin, mail_perso, mail_password, mail_imap, nb_requetes_ia, quota_max, statut_abonnement) 
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     "admin@omnirecrut.fr",
                     mdp_admin_hash,
@@ -298,7 +326,6 @@ def check_password():
                 ),
             )
             conn_auth.commit()
-        conn_auth.close()
     except Exception as e:
         st.error(f"Erreur d'initialisation du système d'authentification : {e}")
 
@@ -340,15 +367,14 @@ def check_password():
                     st.error("Veuillez remplir votre e-mail et votre mot de passe.")
                 else:
                     try:
-                        conn_chk = sqlite3.connect("recrutement_ia.db")
+                        conn_chk = get_connection()
                         c_chk = conn_chk.cursor()
                         c_chk.execute(
                             "SELECT password, date_fin_essai, est_admin, mail_perso,"
-                            " mail_password, mail_imap, statut_abonnement FROM utilisateurs WHERE email = ?",
+                            " mail_password, mail_imap, statut_abonnement FROM utilisateurs WHERE email = %s",
                             (email_saisi,),
                         )
                         res = c_chk.fetchone()
-                        conn_chk.close()
 
                         if res:
                             (
@@ -365,14 +391,13 @@ def check_password():
                                 # stocké en clair, on le remplace par un hash bcrypt.
                                 if not mdp_est_hashe(db_password):
                                     try:
-                                        conn_mig = sqlite3.connect("recrutement_ia.db")
+                                        conn_mig = get_connection()
                                         c_mig = conn_mig.cursor()
                                         c_mig.execute(
-                                            "UPDATE utilisateurs SET password = ? WHERE email = ?",
+                                            "UPDATE utilisateurs SET password = %s WHERE email = %s",
                                             (hacher_mdp(pwd_saisi), email_saisi),
                                         )
                                         conn_mig.commit()
-                                        conn_mig.close()
                                     except Exception:
                                         pass
 
@@ -424,16 +449,13 @@ except ModuleNotFoundError:
     REPORTLAB_DISPO = False
 
 # ==============================================================================
-# 1. CONNEXION ET INITIALISATION DE LA BASE DE DONNÉES SQLite (définition de c)
+# 1. CONNEXION ET INITIALISATION DE LA BASE DE DONNÉES SUPABASE / PostgreSQL (définition de c)
 # ==============================================================================
-conn = sqlite3.connect(
-    "recrutement_ia.db", check_same_thread=False, timeout=30, isolation_level=None
-)
+conn = get_connection()
 c = conn.cursor()
-c.execute("PRAGMA journal_mode=WAL;")
 
 c.execute("""CREATE TABLE IF NOT EXISTS candidats 
-             (id INTEGER PRIMARY KEY AUTOINCREMENT, nom TEXT, poste TEXT, competences TEXT, 
+             (id SERIAL PRIMARY KEY, nom TEXT, poste TEXT, competences TEXT, 
              statut TEXT, categorie_ia TEXT, avis_ia TEXT, score_matching TEXT, secteur_metier TEXT DEFAULT 'Non spécifié', cv_texte TEXT DEFAULT '')""")
 
 try:
@@ -498,7 +520,8 @@ def _save_candidate_to_sqlite(
         """INSERT INTO candidats
            (nom, poste, competences, statut, categorie_ia, avis_ia, score_matching,
             secteur_metier, cv_texte, competences_transferables, profil_riasec, metiers_cibles, date_ajout)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+           RETURNING id""",
         (
             nom_complet,
             poste_cible,
@@ -515,7 +538,7 @@ def _save_candidate_to_sqlite(
             datetime.datetime.now().isoformat(),
         ),
     )
-    candidat_id = c.lastrowid
+    candidat_id = c.fetchone()[0]
     conn.commit()
 
     alertes = _matcher_candidat_vs_besoins_ouverts(candidat_id, nom_complet, poste_cible, competences_resume, secteur_metier)
@@ -719,15 +742,15 @@ def analyser_cv_avec_agent(texte_cv: str, secteur_metier: str, max_tentatives: i
 
 
 c.execute("""CREATE TABLE IF NOT EXISTS clients 
-             (id INTEGER PRIMARY KEY AUTOINCREMENT, entreprise TEXT, secteur TEXT, contact TEXT, 
+             (id SERIAL PRIMARY KEY, entreprise TEXT, secteur TEXT, contact TEXT, 
              secteur_activite TEXT DEFAULT 'Non spécifié', tel TEXT, email TEXT, priorite TEXT, notes TEXT)""")
 
 try:
     c.execute("SELECT secteur_geo FROM clients LIMIT 1")
-except sqlite3.OperationalError:
+except Exception:
     try:
         c.execute("ALTER TABLE clients ADD COLUMN secteur_geo TEXT DEFAULT 'Béziers'")
-    except sqlite3.OperationalError:
+    except Exception:
         pass
 
 # ==============================================================================
@@ -741,7 +764,7 @@ except sqlite3.OperationalError:
 SEUIL_ALERTE_MATCHING = 70  # score mini (0-100) pour déclencher une alerte
 
 c.execute("""CREATE TABLE IF NOT EXISTS besoins_clients (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     entreprise TEXT,
     secteur TEXT,
     description TEXT,
@@ -750,7 +773,7 @@ c.execute("""CREATE TABLE IF NOT EXISTS besoins_clients (
 )""")
 
 c.execute("""CREATE TABLE IF NOT EXISTS alertes_matching (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     candidat_id INTEGER,
     candidat_nom TEXT,
     besoin_id INTEGER,
@@ -778,7 +801,7 @@ def _extraire_json_liste(texte_brut: str) -> list:
 def _matcher_candidat_vs_besoins_ouverts(candidat_id: int, nom: str, poste: str, competences: str, secteur: str) -> list:
     """Déclenchée automatiquement après l'ajout d'un candidat : le compare à tous les
     besoins ouverts du même secteur et crée une alerte pour chaque score suffisant."""
-    c.execute("SELECT id, entreprise, description FROM besoins_clients WHERE secteur = ? AND statut = 'Ouvert'", (secteur,))
+    c.execute("SELECT id, entreprise, description FROM besoins_clients WHERE secteur = %s AND statut = 'Ouvert'", (secteur,))
     besoins = c.fetchall()
     if not besoins:
         return []
@@ -809,7 +832,7 @@ Renvoie STRICTEMENT un tableau JSON, un objet par besoin, avec les clés :
             c.execute(
                 """INSERT INTO alertes_matching
                    (candidat_id, candidat_nom, besoin_id, besoin_entreprise, besoin_description, score, raison, date_alerte)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
                 (candidat_id, nom, besoin_id, b[1], b[2], score, r.get("raison", ""), datetime.datetime.now().isoformat()),
             )
             alertes_creees.append({"besoin_entreprise": b[1], "score": score, "raison": r.get("raison", "")})
@@ -821,7 +844,7 @@ Renvoie STRICTEMENT un tableau JSON, un objet par besoin, avec les clés :
 def matcher_besoin_vs_vivier(besoin_id: int, secteur: str, description: str) -> list:
     """Appelée quand un nouveau besoin client est enregistré : le compare à tous les
     candidats du vivier du même secteur et crée une alerte pour chaque score suffisant."""
-    c.execute("SELECT id, nom, poste, competences FROM candidats WHERE secteur_metier = ?", (secteur,))
+    c.execute("SELECT id, nom, poste, competences FROM candidats WHERE secteur_metier = %s", (secteur,))
     candidats = c.fetchall()
     if not candidats:
         return []
@@ -839,7 +862,7 @@ Renvoie STRICTEMENT un tableau JSON, un objet par candidat, avec les clés :
     except Exception:
         return []
 
-    c.execute("SELECT entreprise FROM besoins_clients WHERE id = ?", (besoin_id,))
+    c.execute("SELECT entreprise FROM besoins_clients WHERE id = %s", (besoin_id,))
     entreprise_row = c.fetchone()
     entreprise = entreprise_row[0] if entreprise_row else "Client"
 
@@ -856,7 +879,7 @@ Renvoie STRICTEMENT un tableau JSON, un objet par candidat, avec les clés :
             c.execute(
                 """INSERT INTO alertes_matching
                    (candidat_id, candidat_nom, besoin_id, besoin_entreprise, besoin_description, score, raison, date_alerte)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
                 (candidat_id, cd[1], besoin_id, entreprise, description, score, r.get("raison", ""), datetime.datetime.now().isoformat()),
             )
             alertes_creees.append({"candidat_nom": cd[1], "score": score, "raison": r.get("raison", "")})
@@ -894,7 +917,7 @@ def generer_digest_quotidien() -> dict:
         limite_medecine = (datetime.date.today() + datetime.timedelta(days=15)).isoformat()
         c.execute(
             """SELECT candidat_nom, date_limite_medecine FROM contrats
-               WHERE date_limite_medecine BETWEEN ? AND ? ORDER BY date_limite_medecine ASC""",
+               WHERE date_limite_medecine BETWEEN %s AND %s ORDER BY date_limite_medecine ASC""",
             (aujourd_hui, limite_medecine),
         )
         digest["visites_medecine_proches"] = c.fetchall()
@@ -905,7 +928,7 @@ def generer_digest_quotidien() -> dict:
         limite_fin_contrat = (datetime.date.today() + datetime.timedelta(days=7)).isoformat()
         c.execute(
             """SELECT candidat_nom, date_fin, entreprise_nom FROM contrats
-               WHERE date_fin BETWEEN ? AND ? ORDER BY date_fin ASC""",
+               WHERE date_fin BETWEEN %s AND %s ORDER BY date_fin ASC""",
             (aujourd_hui, limite_fin_contrat),
         )
         digest["fins_de_contrat_proches"] = c.fetchall()
@@ -916,7 +939,7 @@ def generer_digest_quotidien() -> dict:
         seuil_dormance = (datetime.date.today() - datetime.timedelta(days=30)).isoformat()
         c.execute(
             """SELECT id, nom, poste FROM candidats
-               WHERE statut = 'Disponible' AND (date_ajout IS NULL OR date_ajout <= ?)""",
+               WHERE statut = 'Disponible' AND (date_ajout IS NULL OR date_ajout <= %s)""",
             (seuil_dormance,),
         )
         digest["candidats_dormants"] = c.fetchall()
@@ -981,7 +1004,7 @@ query_params = st.query_params
 if query_params.get("payment") == "success":
     user_email = st.session_state.get("user_email")
     if user_email:
-        c.execute("UPDATE utilisateurs SET statut_abonnement = 'PRO', quota_max = 999999 WHERE email = ?", (user_email,))
+        c.execute("UPDATE utilisateurs SET statut_abonnement = 'PRO', quota_max = 999999 WHERE email = %s", (user_email,))
         st.session_state['user_statut'] = 'PRO'
         st.balloons()
         st.success("🎉 Félicitations ! Votre abonnement PRO Illimité est actif.")
@@ -1015,7 +1038,7 @@ with st.sidebar:
                 st.caption(raison_al or desc_besoin[:80])
                 if not lue:
                     if st.button("✅ Marquer comme lue", key=f"lue_{alerte_id}", use_container_width=True):
-                        c.execute("UPDATE alertes_matching SET lue = 1 WHERE id = ?", (alerte_id,))
+                        c.execute("UPDATE alertes_matching SET lue = 1 WHERE id = %s", (alerte_id,))
                         conn.commit()
                         st.rerun()
                 st.markdown("---")
@@ -1024,7 +1047,7 @@ with st.sidebar:
     user_email = st.session_state.get("user_email", "")
     
     # Récupération de l'état du quota et du statut
-    c.execute("SELECT nb_requetes_ia, quota_max, statut_abonnement FROM utilisateurs WHERE email = ?", (user_email,))
+    c.execute("SELECT nb_requetes_ia, quota_max, statut_abonnement FROM utilisateurs WHERE email = %s", (user_email,))
     res_u = c.fetchone()
     
     quota_utilise = res_u[0] if res_u and res_u[0] is not None else 0
@@ -1063,7 +1086,7 @@ with st.sidebar:
 
 # --- TABLES RH & ADMINISTRATIVES ---
 c.execute("""CREATE TABLE IF NOT EXISTS contrats (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 candidat_nom TEXT,
                 entreprise_nom TEXT,
                 type_contrat TEXT,
@@ -1092,7 +1115,7 @@ except Exception:
   pass
 
 c.execute("""CREATE TABLE IF NOT EXISTS suivi_heures (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 candidat_nom TEXT,
                 entreprise_nom TEXT,
                 semaine TEXT,
@@ -1185,12 +1208,12 @@ with st.sidebar.form("form_cfg_mail"):
 
   if btn_save_mail:
     try:
-      conn_u = sqlite3.connect("recrutement_ia.db")
+      conn_u = get_connection()
       c_u = conn_u.cursor()
       c_u.execute(
           """UPDATE utilisateurs 
-                         SET mail_perso = ?, mail_password = ?, mail_imap = ? 
-                         WHERE email = ?""",
+                         SET mail_perso = %s, mail_password = %s, mail_imap = %s 
+                         WHERE email = %s""",
           (
               email_utilisateur,
               password_email,
@@ -1199,7 +1222,6 @@ with st.sidebar.form("form_cfg_mail"):
           ),
       )
       conn_u.commit()
-      conn_u.close()
 
       st.session_state["user_config_email"] = {
           "email": email_utilisateur,
@@ -1241,21 +1263,20 @@ if st.session_state.get("is_admin", False):
                         date_fin_calc = (
                             datetime.date.today() + datetime.timedelta(days=p_jours)
                         ).isoformat()
-                        conn_add = sqlite3.connect("recrutement_ia.db")
+                        conn_add = get_connection()
                         c_add = conn_add.cursor()
                         c_add.execute(
                             """INSERT INTO utilisateurs (email, password, date_fin_essai, est_admin, nb_requetes_ia)
-                               VALUES (?, ?, ?, 0, 0)""",
+                               VALUES (%s, %s, %s, 0, 0)""",
                             (p_email, hacher_mdp(p_pwd), date_fin_calc),
                         )
                         conn_add.commit()
-                        conn_add.close()
                         st.success(
                             f"Accès créé pour {p_email} jusqu'au"
                             f" {datetime.date.fromisoformat(date_fin_calc).strftime('%d/%m/%Y')} ! "
                             f"Mot de passe à communiquer au prospect : **{p_pwd}**"
                         )
-                    except sqlite3.IntegrityError:
+                    except psycopg2.IntegrityError:
                         st.error("Cet e-mail possède déjà un compte.")
                     except Exception as e_adm:
                         st.error(f"Erreur : {e_adm}")
@@ -1278,14 +1299,13 @@ if st.session_state.get("is_admin", False):
                     st.error("Le mot de passe doit faire au moins 8 caractères.")
                 else:
                     try:
-                        conn_pwd = sqlite3.connect("recrutement_ia.db")
+                        conn_pwd = get_connection()
                         c_pwd = conn_pwd.cursor()
                         c_pwd.execute(
-                            "UPDATE utilisateurs SET password = ? WHERE email = ?",
+                            "UPDATE utilisateurs SET password = %s WHERE email = %s",
                             (hacher_mdp(nouveau_mdp_1), st.session_state.get("user_email")),
                         )
                         conn_pwd.commit()
-                        conn_pwd.close()
                         st.success(
                             "✅ Mot de passe mis à jour. Il sera actif dès ta prochaine connexion."
                         )
@@ -1295,11 +1315,10 @@ if st.session_state.get("is_admin", False):
     # --- 2. SOUS-MENU : SUIVI & RÉINITIALISATION DES QUOTAS IA ---
     with st.sidebar.expander("📊 Quotas IA & Remise à 0"):
         try:
-            conn_q = sqlite3.connect("recrutement_ia.db")
+            conn_q = get_connection()
             c_q = conn_q.cursor()
             c_q.execute("SELECT email, COALESCE(nb_requetes_ia, 0) FROM utilisateurs WHERE est_admin = 0")
             prospects_data = c_q.fetchall()
-            conn_q.close()
 
             if prospects_data:
                 # Affichage de la consommation de chaque prospect
@@ -1313,11 +1332,10 @@ if st.session_state.get("is_admin", False):
                 target_user = st.selectbox("Réinitialiser l'utilisateur :", liste_emails, key="sb_reset_quota_sb")
                 
                 if st.button("🔄 Remettre le quota à 0", key="btn_reset_quota_sb"):
-                    conn_res = sqlite3.connect("recrutement_ia.db")
+                    conn_res = get_connection()
                     c_res = conn_res.cursor()
-                    c_res.execute("UPDATE utilisateurs SET nb_requetes_ia = 0 WHERE email = ?", (target_user,))
+                    c_res.execute("UPDATE utilisateurs SET nb_requetes_ia = 0 WHERE email = %s", (target_user,))
                     conn_res.commit()
-                    conn_res.close()
                     st.success(f"Quota réinitialisé pour {target_user} !")
                     st.rerun()
             else:
@@ -1330,21 +1348,19 @@ if st.session_state.get("is_admin", False):
     # --- 3. SOUS-MENU : SUPPRESSION D'UN PROSPECT ---
     with st.sidebar.expander("🗑️ Supprimer un Prospect"):
         try:
-            conn_del_list = sqlite3.connect("recrutement_ia.db")
+            conn_del_list = get_connection()
             c_dl = conn_del_list.cursor()
             c_dl.execute("SELECT email FROM utilisateurs WHERE est_admin = 0")
             prospects_suppr = [row[0] for row in c_dl.fetchall()]
-            conn_del_list.close()
 
             if prospects_suppr:
                 user_a_supprimer = st.selectbox("Choisir le prospect à supprimer :", prospects_suppr, key="sb_delete_user")
                 
                 if st.button("🗑️ Supprimer définitivement", key="btn_confirm_delete", type="primary"):
-                    conn_del = sqlite3.connect("recrutement_ia.db")
+                    conn_del = get_connection()
                     c_d = conn_del.cursor()
-                    c_d.execute("DELETE FROM utilisateurs WHERE email = ?", (user_a_supprimer,))
+                    c_d.execute("DELETE FROM utilisateurs WHERE email = %s", (user_a_supprimer,))
                     conn_del.commit()
-                    conn_del.close()
                     st.success(f"Le prospect {user_a_supprimer} a été supprimé.")
                     st.rerun()
             else:
@@ -1415,7 +1431,7 @@ if st.session_state['page_active'] == "🧭 TABLEAU DE BORD":
 
                     if st.session_state.get(f"brouillon_relance_{cand_id_dorm}"):
                         st.markdown(f"""<div style="background-color:#262730; padding:14px; border-radius:8px; color:white; white-space:pre-wrap; font-size:13px;">{st.session_state[f"brouillon_relance_{cand_id_dorm}"]}</div>""", unsafe_allow_html=True)
-                        c.execute("SELECT competences FROM candidats WHERE id = ?", (cand_id_dorm,))
+                        c.execute("SELECT competences FROM candidats WHERE id = %s", (cand_id_dorm,))
                         coord_row = c.fetchone()
                         email_dorm = extraire_email(coord_row[0]) if coord_row and coord_row[0] else None
                         if email_dorm:
@@ -1430,8 +1446,11 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
     st.header("🗃️ Gestion et Pilotage du Vivier Interne")
     
     try:
-        c.execute("PRAGMA table_info(candidats)")
-        colonnes_existantes = [info[1] for info in c.fetchall()]
+        c.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = %s",
+            ("candidats",),
+        )
+        colonnes_existantes = [info[0] for info in c.fetchall()]
         
         colonnes_requises = {
             "nom": "TEXT",
@@ -1652,7 +1671,7 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
                         for colonne, nouvelle_valeur in modifications.items():
                             nom_colonne_sql = {"Statut": "statut", "Catégorie": "categorie_ia"}.get(colonne)
                             if nom_colonne_sql:
-                                c.execute(f"UPDATE candidats SET {nom_colonne_sql} = ? WHERE id = ?", (nouvelle_valeur, id_candidat))
+                                c.execute(f"UPDATE candidats SET {nom_colonne_sql} = %s WHERE id = %s", (nouvelle_valeur, id_candidat))
                                 vivier_modifie = True
                     if vivier_modifie:
                         st.success("Modifications du vivier enregistrées !")
@@ -1694,7 +1713,7 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
                     confirmer_suppression = st.checkbox(f"Je confirme vouloir supprimer définitivement {candidat_selectionne} de la base", key=f"conf_del_{id_selectionne}")
                     if st.button(f"❌ Supprimer le candidat", type="primary", disabled=not confirmer_suppression, use_container_width=True):
                         try:
-                            c.execute("DELETE FROM candidats WHERE id = ?", (id_selectionne,))
+                            c.execute("DELETE FROM candidats WHERE id = %s", (id_selectionne,))
                             conn.commit()
                             st.success(f"Le candidat {candidat_selectionne} a été supprimé.")
                             st.rerun()
@@ -1702,7 +1721,7 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
                             st.error(f"Erreur : {e}")
                     
                     st.markdown("### 🗓️ Gestion des Rendez-vous & Relances")
-                    c.execute("SELECT type_rdv, date_rdv FROM candidats WHERE nom = ?", (candidat_selectionne,))
+                    c.execute("SELECT type_rdv, date_rdv FROM candidats WHERE nom = %s", (candidat_selectionne,))
                     rdv_id = c.fetchone()
                     current_type_rdv = rdv_id[0] if rdv_id else None
                     current_date_rdv = rdv_id[1] if rdv_id else None
@@ -1710,7 +1729,7 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
                     if current_type_rdv and current_date_rdv:
                         st.info(f"📅 **RDV Planifié : {current_type_rdv}** prévu le `{current_date_rdv}`")
                         if st.button("🗑️ Annuler / Supprimer le RDV", type="primary", use_container_width=True):
-                            c.execute("UPDATE candidats SET type_rdv = NULL, date_rdv = NULL WHERE nom = ?", (candidat_selectionne,))
+                            c.execute("UPDATE candidats SET type_rdv = NULL, date_rdv = NULL WHERE nom = %s", (candidat_selectionne,))
                             conn.commit()
                             st.success(f"RDV supprimé pour {candidat_selectionne} !")
                             st.rerun()
@@ -1722,7 +1741,7 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
                         
                         if st.button("📅 Enregistrer l'action de suivi", use_container_width=True, type="secondary"):
                             datetime_rdv = f"{date_rdv.strftime('%Y-%m-%d')} à {heure_rdv}"
-                            c.execute("UPDATE candidats SET type_rdv = ?, date_rdv = ? WHERE nom = ?", (type_rdv, datetime_rdv, candidat_selectionne))
+                            c.execute("UPDATE candidats SET type_rdv = %s, date_rdv = %s WHERE nom = %s", (type_rdv, datetime_rdv, candidat_selectionne))
                             conn.commit()
                             st.success(f"Action enregistrée pour {candidat_selectionne} le {datetime_rdv} !")
                             st.rerun()
@@ -1930,7 +1949,7 @@ elif st.session_state['page_active'] == "🎯 MATCHING IA OFFRES & CV":
             try:
                 for cand in st.session_state['derniers_matchs']:
                     c.execute("""INSERT INTO candidats (nom, poste, competences, statut, categorie_ia, avis_ia, score_matching, secteur_metier, cv_texte, date_ajout) 
-                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                               (cand["nom"], "Profil Analysé", f"{cand['coordonnees']} | {cand['competences']}", "Nouveau", "À Classer", cand["justification"], f"{cand['score']} %", secteur_pour_import, cand.get("cv_texte", ""), datetime.datetime.now().isoformat()))
                 st.success(f"✅ Candidat(s) enregistré(s) dans le secteur '{secteur_pour_import}' !")
                 st.session_state['derniers_matchs'] = []
@@ -1969,7 +1988,7 @@ elif st.session_state["page_active"] == "🏢 PORTEFEUILLE CLIENTS":
       else:
         c.execute(
             """INSERT INTO clients (entreprise, secteur, contact, secteur_activite, tel, email, priorite, notes) 
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
             (
                 nom,
                 ville,
@@ -2017,7 +2036,7 @@ elif st.session_state["page_active"] == "🏢 PORTEFEUILLE CLIENTS":
         if st.button("🔄 Sauvegarder les modifications"):
           for i, row in edited_df.iterrows():
             c.execute(
-                """UPDATE clients SET entreprise=?, secteur=?, contact=?, tel=?, priorite=?, notes=? WHERE id=?""",
+                """UPDATE clients SET entreprise=%s, secteur=%s, contact=%s, tel=%s, priorite=%s, notes=%s WHERE id=%s""",
                 (
                     row["entreprise"],
                     row["secteur"],
@@ -2062,7 +2081,7 @@ elif st.session_state["page_active"] == "🏢 PORTEFEUILLE CLIENTS":
               f"❌ SUPPRIMER {client_a_supprimer.upper()}", type="primary"
           ):
             c.execute(
-                "DELETE FROM clients WHERE entreprise = ?",
+                "DELETE FROM clients WHERE entreprise = %s",
                 (client_a_supprimer,),
             )
             st.success(f"Client {client_a_supprimer} supprimé avec succès !")
@@ -2113,7 +2132,7 @@ elif st.session_state['page_active'] in ["✍️ RÉDACTION ANNONCES IA", "🚨 
     elif client_selectionne != "-- Choisir un client existant --":
         entreprise_cible = client_selectionne.split(" (")[0]
         try:
-            c.execute("SELECT secteur FROM clients WHERE entreprise=?", (entreprise_cible,))
+            c.execute("SELECT secteur FROM clients WHERE entreprise=%s", (entreprise_cible,))
             res_ville = c.fetchone()
             if res_ville and res_ville[0]: 
                 ville_cible = res_ville[0]
@@ -2206,11 +2225,11 @@ elif st.session_state['page_active'] == "🤝 MATCHING & OPPORTUNITÉS":
                     st.error("⚠️ Vous avez atteint votre quota mensuel de requêtes IA. Contactez l'administrateur pour débloquer votre accès.")
                 else:
                     c.execute(
-                        "INSERT INTO besoins_clients (entreprise, secteur, description, date_creation) VALUES (?, ?, ?, ?)",
+                        "INSERT INTO besoins_clients (entreprise, secteur, description, date_creation) VALUES (%s, %s, %s, %s) RETURNING id",
                         (entreprise_besoin, secteur_besoin, besoin_details, datetime.datetime.now().isoformat()),
                     )
+                    besoin_id_nouveau = c.fetchone()[0]
                     conn.commit()
-                    besoin_id_nouveau = c.lastrowid
                     with st.spinner("Comparaison avec le vivier existant..."):
                         alertes = matcher_besoin_vs_vivier(besoin_id_nouveau, secteur_besoin, besoin_details)
                     incrémenter_quota_ia(st.session_state.get("user_email"))
@@ -2238,7 +2257,7 @@ elif st.session_state['page_active'] == "🤝 MATCHING & OPPORTUNITÉS":
                 if not peut_utiliser_ia(st.session_state.get("user_email")):
                     st.error("⚠️ Vous avez atteint votre quota mensuel de 300 requêtes IA. Contactez l'administrateur pour débloquer votre accès.")
                 else:
-                    c.execute("SELECT nom, poste, competences FROM candidats WHERE secteur_metier = ?", (secteur_besoin,))
+                    c.execute("SELECT nom, poste, competences FROM candidats WHERE secteur_metier = %s", (secteur_besoin,))
                     candidats_db = c.fetchall()
                     if not candidats_db: 
                         st.warning("Aucun candidat trouvé.")
@@ -2273,7 +2292,7 @@ elif st.session_state['page_active'] == "🤝 MATCHING & OPPORTUNITÉS":
 
         candidat_pepite = st.selectbox("💎 Sélectionner la pépite à placer :", ["-- Choisir un candidat --"] + liste_candidats_inv)
         if candidat_pepite != "-- Choisir un candidat --":
-            c.execute("SELECT poste, competences, cv_texte FROM candidats WHERE nom = ?", (candidat_pepite,))
+            c.execute("SELECT poste, competences, cv_texte FROM candidats WHERE nom = %s", (candidat_pepite,))
             res_cand = c.fetchone()
             if res_cand:
                 poste_cand, comp_cand, cv_cand = res_cand[0], res_cand[1], res_cand[2]
@@ -2431,7 +2450,7 @@ elif st.session_state['page_active'] == "🤝 MATCHING & OPPORTUNITÉS":
                 if not peut_utiliser_ia(st.session_state.get("user_email")):
                     st.error("⚠️ Vous avez atteint votre quota mensuel de 300 requêtes IA. Contactez l'administrateur pour débloquer votre accès.")
                 else:
-                    c.execute("SELECT nom, poste, competences FROM candidats WHERE secteur_metier = ?", (secteur_besoin,))
+                    c.execute("SELECT nom, poste, competences FROM candidats WHERE secteur_metier = %s", (secteur_besoin,))
                     candidats_db = c.fetchall()
                     if not candidats_db: 
                         st.warning("Aucun candidat trouvé.")
@@ -2466,7 +2485,7 @@ elif st.session_state['page_active'] == "🤝 MATCHING & OPPORTUNITÉS":
 
         candidat_pepite = st.selectbox("💎 Sélectionner la pépite à placer :", ["-- Choisir un candidat --"] + liste_candidats_inv)
         if candidat_pepite != "-- Choisir un candidat --":
-            c.execute("SELECT poste, competences, cv_texte FROM candidats WHERE nom = ?", (candidat_pepite,))
+            c.execute("SELECT poste, competences, cv_texte FROM candidats WHERE nom = %s", (candidat_pepite,))
             res_cand = c.fetchone()
             if res_cand:
                 poste_cand, comp_cand, cv_cand = res_cand[0], res_cand[1], res_cand[2]
@@ -2622,7 +2641,7 @@ elif st.session_state['page_active'] == "📊 PIPELINE DE RECRUTEMENT":
                 # Mise à jour immédiate en BDD en cas de changement
                 if nouveau_statut != statut:
                     try:
-                        c.execute("UPDATE candidats SET statut = ? WHERE id = ?", (nouveau_statut, candidat['id']))
+                        c.execute("UPDATE candidats SET statut = %s WHERE id = %s", (nouveau_statut, candidat['id']))
                         conn.commit()
                         st.success(f"🔄 {candidat['nom']} mis à jour.")
                         st.rerun()
@@ -2792,18 +2811,18 @@ elif st.session_state['page_active'] == "📋 GESTION ADMINISTRATIVE & RH":
                 ccn_detectee = "Convention Collective Nationale de la Restauration Collective (IDCC 1266)" if any(x in saisie_poste.lower() for x in ["cuisinier", "chef", "restauration"]) else "Convention Collective Nationale applicable"
                 
                 # Enregistrement en base
-                c.execute(f"INSERT INTO contrats (candidat_nom, {entreprise_col}, type_contrat, poste, date_debut, date_fin, convention_collective, date_limite_medecine) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                c.execute(f"INSERT INTO contrats (candidat_nom, {entreprise_col}, type_contrat, poste, date_debut, date_fin, convention_collective, date_limite_medecine) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
                           (salarie_clean, nom_employeur, type_ct, saisie_poste, date_embauche.strftime('%Y-%m-%d'), date_fin_m.strftime('%Y-%m-%d'), ccn_detectee, dt_limite.strftime('%Y-%m-%d')))
-                c.execute("UPDATE candidats SET statut = ?, poste = ? WHERE nom = ?", ("En mission", saisie_poste, salarie_clean))
+                id_nouveau_contrat = c.fetchone()[0]
+                c.execute("UPDATE candidats SET statut = %s, poste = %s WHERE nom = %s", ("En mission", saisie_poste, salarie_clean))
                 conn.commit()
 
                 # --- Veille réglementaire proactive : suggestion générée automatiquement,
                 # stockée à part, JAMAIS injectée dans les notes officielles sans validation
                 # humaine explicite (voir onglet Suivi Médecine du Travail).
-                id_nouveau_contrat = c.lastrowid
                 suggestion_med = generer_suggestion_medecine(saisie_poste)
                 if suggestion_med:
-                    c.execute("UPDATE contrats SET suggestion_ia_medecine = ? WHERE id = ?", (suggestion_med, id_nouveau_contrat))
+                    c.execute("UPDATE contrats SET suggestion_ia_medecine = %s WHERE id = %s", (suggestion_med, id_nouveau_contrat))
                     conn.commit()
 
                 # Création du PDF pro complet
@@ -2888,12 +2907,12 @@ Signature de l'employeur                 Signature du salarié
                                 if st.button("✅ Valider et injecter dans les notes officielles", key=f"valider_sugg_{ligne_sugg['id']}", use_container_width=True):
                                     notes_actuelles = ligne_sugg.get("suivi_medical_notes") or ""
                                     nouvelles_notes_validees = f"{notes_actuelles}\n- [IA - validé par un humain] {ligne_sugg['suggestion_ia_medecine']}".strip()
-                                    c.execute("UPDATE contrats SET suivi_medical_notes = ?, suggestion_ia_medecine = NULL WHERE id = ?", (nouvelles_notes_validees, int(ligne_sugg["id"])))
+                                    c.execute("UPDATE contrats SET suivi_medical_notes = %s, suggestion_ia_medecine = NULL WHERE id = %s", (nouvelles_notes_validees, int(ligne_sugg["id"])))
                                     conn.commit()
                                     st.rerun()
                             with col_reject_sugg:
                                 if st.button("❌ Rejeter cette suggestion", key=f"rejeter_sugg_{ligne_sugg['id']}", use_container_width=True):
-                                    c.execute("UPDATE contrats SET suggestion_ia_medecine = NULL WHERE id = ?", (int(ligne_sugg["id"]),))
+                                    c.execute("UPDATE contrats SET suggestion_ia_medecine = NULL WHERE id = %s", (int(ligne_sugg["id"]),))
                                     conn.commit()
                                     st.rerun()
                             st.markdown("---")
@@ -2920,8 +2939,8 @@ Signature de l'employeur                 Signature du salarié
                             for index, row in edited_df.iterrows():
                                 c.execute("""
                                     UPDATE contrats 
-                                    SET date_debut = ?, date_fin = ?, date_limite_medecine = ?, statut_medecine = ?, suivi_medical_notes = ?
-                                    WHERE id = ?
+                                    SET date_debut = %s, date_fin = %s, date_limite_medecine = %s, statut_medecine = %s, suivi_medical_notes = %s
+                                    WHERE id = %s
                                 """, (row["Début Mission"], row["Fin Mission"], row["Date Limite Visite"], row["Statut Visite"], row["Notes Médicales / Commentaires"], int(row["id"])))
                             conn.commit()
                             st.success("✅ Modifications enregistrées avec succès !")
@@ -2930,8 +2949,8 @@ Signature de l'employeur                 Signature du salarié
                             
                     with col_actions_2:
                         if st.button("🗑️ Réinitialiser & Vider le tableau", use_container_width=True, type="secondary"):
-                            c.execute("DELETE FROM contrats WHERE candidat_nom = ?", (candidat_selectionne_filtre,))
-                            c.execute("UPDATE candidats SET statut = 'Disponible' WHERE nom = ?", (candidat_selectionne_filtre,))
+                            c.execute("DELETE FROM contrats WHERE candidat_nom = %s", (candidat_selectionne_filtre,))
+                            c.execute("UPDATE candidats SET statut = 'Disponible' WHERE nom = %s", (candidat_selectionne_filtre,))
                             conn.commit()
                             
                             if editor_key in st.session_state:
@@ -2951,7 +2970,7 @@ Signature de l'employeur                 Signature du salarié
                         if not peut_utiliser_ia(st.session_state.get("user_email")):
                             st.error("⚠️ Vous avez atteint votre quota mensuel de 300 requêtes IA. Contactez l'administrateur pour débloquer votre accès.")
                         else:
-                            c.execute("SELECT poste FROM candidats WHERE nom = ?", (candidat_selectionne_filtre,))
+                            c.execute("SELECT poste FROM candidats WHERE nom = %s", (candidat_selectionne_filtre,))
                             p_res = c.fetchone()
                             poste_contexte = p_res[0] if p_res else "Général"
                             
@@ -2976,7 +2995,7 @@ Signature de l'employeur                 Signature du salarié
                             current_notes = current_notes if current_notes else ""
                             nouvelles_notes = f"{current_notes}\n- [IA] {st.session_state['proposition_ia_med']}".strip()
                             
-                            c.execute("UPDATE contrats SET suivi_medical_notes = ? WHERE id = ?", (nouvelles_notes, id_actuel))
+                            c.execute("UPDATE contrats SET suivi_medical_notes = %s WHERE id = %s", (nouvelles_notes, id_actuel))
                             conn.commit()
                             
                             if editor_key in st.session_state:
@@ -3012,7 +3031,7 @@ Signature de l'employeur                 Signature du salarié
                 try:
                     c.execute("""
                         INSERT INTO suivi_heures (candidat_nom, entreprise_nom, semaine, heures_normales, heures_sup_25, heures_sup_50) 
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        VALUES (%s, %s, %s, %s, %s, %s)
                     """, (salarie_h, nom_ent_h, semaine_h, h_normales, h_25, h_50))
                     conn.commit()
                     heures_totales = h_normales + h_25 + h_50
