@@ -3076,14 +3076,26 @@ elif st.session_state['page_active'] in ["✍️ RÉDACTION ANNONCES IA", "🚨 
     if 'derniere_offre_generee' in st.session_state and st.session_state['derniere_offre_generee']:
         st.markdown("---")
         col_t, col_b = st.columns([3, 1])
-        with col_t: 
+        with col_t:
             st.markdown("### 📋 Annonce rédigée par l'IA :")
         with col_b:
             if st.button("🗑️ Effacer l'offre", use_container_width=True):
                 st.session_state['derniere_offre_generee'] = ""
                 st.rerun()
-                
-        st.markdown(f'<div style="background-color: #2d3748; padding: 20px; border-radius: 8px; border: 1px solid #4a5568; margin-bottom: 20px; color: white; white-space: pre-wrap;">{st.session_state["derniere_offre_generee"]}</div>', unsafe_allow_html=True)
+
+        st.caption("✏️ Vous pouvez modifier le texte ci-dessous avant de l'exporter.")
+        # text_area éditable — les modifications sont répercutées en session_state
+        # pour que les exports (HTML, PDF, Matching) utilisent toujours la version corrigée.
+        texte_edite = st.text_area(
+            label="Contenu de l'annonce (modifiable) :",
+            value=st.session_state['derniere_offre_generee'],
+            height=450,
+            key="annonce_editee",
+            label_visibility="collapsed",
+        )
+        # Synchronisation immédiate : si l'utilisateur a modifié, on met à jour session_state
+        if texte_edite != st.session_state['derniere_offre_generee']:
+            st.session_state['derniere_offre_generee'] = texte_edite
 
         col_action1, col_action2, col_action3, col_action4 = st.columns(4)
         with col_action1:
@@ -3092,7 +3104,7 @@ elif st.session_state['page_active'] in ["✍️ RÉDACTION ANNONCES IA", "🚨 
         with col_action2:
             if st.button("📄 EXPORTER PDF", use_container_width=True):
                 chemin = creer_pdf_annonce(poste if poste else "Offre", st.session_state['derniere_offre_generee'])
-                with open(chemin, "rb") as f: 
+                with open(chemin, "rb") as f:
                     st.download_button("⬇️ TÉLÉCHARGER PDF", f, file_name=os.path.basename(chemin), mime="application/pdf", use_container_width=True)
         with col_action3:
             if st.button("🎯 MATCHING", use_container_width=True):
