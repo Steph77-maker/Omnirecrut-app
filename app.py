@@ -1031,11 +1031,21 @@ def _get_tool_save_candidate():
                     ),
                     "pourcentage_adequation": genai.protos.Schema(type=genai.protos.Type.INTEGER),
                     "compte_rendu": genai.protos.Schema(type=genai.protos.Type.STRING),
+                    "secteur_detecte": genai.protos.Schema(
+                        type=genai.protos.Type.STRING,
+                        description=(
+                            "Secteur d'activité le plus cohérent avec le parcours du candidat. "
+                            "Choisir STRICTEMENT parmi ces valeurs exactes : "
+                            "'Restauration / Hôtellerie', 'Tertiaire / Bureau / PME', "
+                            "'Transport / Logistique', 'Bâtiment / TP', 'Industrie / Technique', 'Autre'."
+                        ),
+                    ),
                 },
                 required=[
                     "nom_complet", "diplomes", "hard_skills", "soft_skills_transferables",
                     "traits_dominants", "indices_parcours_pro", "indices_centres_interet",
                     "coherence_projet_pro", "metiers_cibles", "pourcentage_adequation", "compte_rendu",
+                    "secteur_detecte",
                 ],
             ),
         )
@@ -1110,13 +1120,23 @@ Procède dans cet ordre exact :
    logique derrière les métiers cibles proposés. Ce texte doit se suffire à lui-même pour qu'un
    recruteur comprenne le raisonnement sans avoir à relire le CV. Propose ensuite une liste de
    métiers cibles cohérents classés par pertinence.
-5. SCORE D'EMPLOYABILITÉ : calcule un pourcentage global (0-100) représentant l'employabilité
+5. SECTEUR D'ACTIVITÉ : déduis le secteur le plus cohérent avec l'ensemble du parcours du candidat.
+   Choisis STRICTEMENT l'une de ces valeurs exactes (respecte l'orthographe et la casse) :
+   - "Restauration / Hôtellerie"
+   - "Tertiaire / Bureau / PME"
+   - "Transport / Logistique"
+   - "Bâtiment / TP"
+   - "Industrie / Technique"
+   - "Autre"
+   Si le parcours est mixte, choisis le secteur dominant ou celui vers lequel le candidat semble
+   s'orienter selon ses métiers cibles. Ne laisse jamais ce champ vide.
+6. SCORE D'EMPLOYABILITÉ : calcule un pourcentage global (0-100) représentant l'employabilité
    estimée du profil sur le secteur indiqué, en tenant compte de la richesse du parcours, de la
    diversité des compétences, de la clarté du projet professionnel et de la transférabilité des
    acquis. Ce score n'est PAS un score de matching avec une offre précise (il n'y en a pas ici),
    mais une estimation de la solidité globale du profil. Explique brièvement dans le compte-rendu
    ce que ce score représente et comment il a été calculé.
-6. ENREGISTREMENT : appelle SYSTÉMATIQUEMENT et une seule fois la fonction save_candidate_to_sqlite
+7. ENREGISTREMENT : appelle SYSTÉMATIQUEMENT et une seule fois la fonction save_candidate_to_sqlite
    avec tous les champs remplis (champs à plat, pas d'objets imbriqués), une fois l'analyse complète.
 
 Contraintes générales : n'invente jamais un diplôme, une compétence ou une expérience absente du CV ;
@@ -2108,7 +2128,22 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
     with st.expander("🧠 Nouvel Agent IA — Analyse enrichie d'un CV (sans offre de référence)", expanded=False):
         st.caption("Diplômes, compétences dures, compétences transférables justifiées, indices de personnalité (parcours & centres d'intérêt) et métiers cibles — enregistrés automatiquement dans le vivier.")
         fichier_cv_agent = st.file_uploader("CV au format PDF :", type=["pdf"], key="uploader_cv_agent")
-        secteur_cv_agent = st.selectbox("Secteur d'affectation :", LISTE_SECTEURS[1:], key="secteur_cv_agent")
+
+        # Pré-sélection du secteur : si Gemini a suggéré un secteur lors de la dernière analyse,
+        # on positionne la selectbox dessus — l'utilisateur peut toujours modifier avant de relancer.
+        _secteurs_disponibles = LISTE_SECTEURS[1:]  # sans "Tous"
+        _secteur_suggere = st.session_state.get("secteur_suggere_agent", "")
+        _index_defaut = _secteurs_disponibles.index(_secteur_suggere) if _secteur_suggere in _secteurs_disponibles else 0
+
+        if _secteur_suggere:
+            st.info(f"💡 Secteur suggéré par l'IA d'après le dernier CV analysé : **{_secteur_suggere}**")
+
+        secteur_cv_agent = st.selectbox(
+            "Secteur d'affectation (modifiable) :",
+            _secteurs_disponibles,
+            index=_index_defaut,
+            key="secteur_cv_agent",
+        )
 
         if st.button("🚀 Lancer l'agent d'analyse", key="btn_agent_cv"):
             if not fichier_cv_agent:
@@ -2123,6 +2158,10 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
                         resultat_agent = analyser_cv_avec_agent(texte_cv_agent, secteur_cv_agent)
                     incrémenter_quota_ia(st.session_state.get("user_email"))
                     st.session_state["dernier_rapport_agent"] = resultat_agent
+                    # Mémorisation de la suggestion de secteur pour le prochain CV
+                    _secteur_ia = (resultat_agent.get("donnees_structurees") or {}).get("secteur_detecte", "")
+                    if _secteur_ia in _secteurs_disponibles:
+                        st.session_state["secteur_suggere_agent"] = _secteur_ia
                     st.success("✅ Analyse terminée et candidat enregistré dans le vivier !")
                 except Exception as e:
                     st.error(f"Erreur lors de l'analyse : {e}")
