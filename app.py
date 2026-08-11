@@ -879,21 +879,25 @@ _migrer_schema_candidats(conn)
 # L'agent enregistre lui-même le résultat dans la table candidats via un tool.
 # ==============================================================================
 
-def _save_candidate_to_sqlite(
-    nom_complet: str,
-    diplomes: list,
-    hard_skills: list,
-    soft_skills_transferables: list,
-    traits_dominants: list,
-    indices_parcours_pro: str,
-    indices_centres_interet: str,
-    coherence_projet_pro: str,
-    metiers_cibles: list,
-    pourcentage_adequation: int,
-    compte_rendu: str,
-    secteur_metier: str = "Non spécifié",
-    cv_texte: str = "",
-) -> dict:
+def _save_candidate_to_sqlite(**kwargs) -> dict:
+    nom_complet              = kwargs.get("nom_complet", "Inconnu")
+    diplomes                 = kwargs.get("diplomes", [])
+    hard_skills              = kwargs.get("hard_skills", [])
+    soft_skills_transferables= kwargs.get("soft_skills_transferables", [])
+    traits_dominants         = kwargs.get("traits_dominants", [])
+    indices_parcours_pro     = kwargs.get("indices_parcours_pro", "")
+    indices_centres_interet  = kwargs.get("indices_centres_interet", "")
+    coherence_projet_pro     = kwargs.get("coherence_projet_pro", "")
+    metiers_cibles           = kwargs.get("metiers_cibles", [])
+    pourcentage_adequation   = kwargs.get("pourcentage_adequation", 0)
+    compte_rendu             = kwargs.get("compte_rendu", "")
+    secteur_metier           = kwargs.get("secteur_metier", "Non spécifié")
+    cv_texte                 = kwargs.get("cv_texte", "")
+    # secteur_detecte est récupéré ici pour être renvoyé dans le résultat
+    # (l'UI l'utilisera pour pré-sélectionner la selectbox) — il n'est PAS
+    # écrit en base directement : c'est le secteur_metier (choix utilisateur
+    # confirmé) qui fait foi pour la colonne secteur_metier de la table.
+    secteur_detecte          = kwargs.get("secteur_detecte", "")
     """Tool exécuté par l'agent : enregistre le profil enrichi dans la table candidats existante.
     NB : la colonne 'profil_riasec' est conservée pour compatibilité base de données, mais stocke
     désormais un profil comportemental basé sur le parcours et les centres d'intérêt (pas un test
@@ -943,7 +947,8 @@ def _save_candidate_to_sqlite(
     message = f"Candidat '{nom_complet}' enregistré dans le vivier."
     if alertes:
         message += f" {len(alertes)} correspondance(s) détectée(s) avec des besoins clients ouverts."
-    return {"status": "success", "message": message, "alertes": alertes}
+    return {"status": "success", "message": message, "alertes": alertes, "secteur_detecte": secteur_detecte}
+
 
 
 _AGENT_TOOLS = {"save_candidate_to_sqlite": _save_candidate_to_sqlite}
