@@ -8,6 +8,7 @@ import imaplib
 import json
 import os
 import re
+import secrets
 import smtplib
 import psycopg2
 import psycopg2.extras
@@ -677,6 +678,108 @@ def check_password():
 
         return False
     return True
+
+# ==============================================================================
+# --- PAGE CRÉATION DE COMPTE PROSPECT (accessible sans connexion via token) ---
+# Quand un prospect s'abonne, l'admin lui génère un lien unique contenant un
+# token à usage unique stocké dans la colonne token_creation_compte de sa
+# organisation. Ce lien ouvre cette page qui lui permet de choisir son
+# identifiant (e-mail) et son mot de passe, sans que l'admin y ait accès.
+# ==============================================================================
+_qp_token = st.query_params.get("setup_token")
+if _qp_token:
+    st.markdown("""
+        <style>
+        .stApp { background-color: #1a202c; color: #e2e8f0; }
+        label, [data-testid="stWidgetLabel"] p { color: #ffffff !important; font-weight: 600 !important; }
+        div[data-testid="stTextInput"] input { background-color: #2d3748 !important; color: #ffffff !important; border: 1px solid #4a5568 !important; }
+        </style>
+    """, unsafe_allow_html=True)
+    st.markdown("""
+        <div style="text-align:center; padding:40px 0 20px 0;">
+            <h1 style="color:#ffb703; font-size:38px; font-weight:700;">🤖 OMNIRECRUT IA</h1>
+            <p style="color:#a3b1cc;">Activation de votre compte abonné</p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    conn_tok = get_connection()
+    c_tok = conn_tok.cursor()
+    # NOTE SQL MIGRATION : si la colonne token_creation_compte n'existe pas encore,
+    # exécuter dans Supabase > SQL Editor :
+    #   ALTER TABLE organisations ADD COLUMN IF NOT EXISTS token_creation_compte TEXT;
+    try:
+        c_tok.execute(
+            "SELECT id, nom, email_contact FROM organisations WHERE token_creation_compte = %s AND est_organisation_admin = FALSE",
+            (_qp_token,)
+        )
+        org_tok = c_tok.fetchone()
+    except Exception:
+        conn_tok.rollback()
+        st.error("⚠️ La colonne token_creation_compte est absente. Exécutez dans Supabase SQL Editor : ALTER TABLE organisations ADD COLUMN IF NOT EXISTS token_creation_compte TEXT;")
+        st.stop()
+        org_tok = None
+
+    if not org_tok:
+        st.error("⛔ Ce lien d'activation est invalide ou a déjà été utilisé.")
+        st.info("Contactez votre administrateur OmniRecrut IA pour obtenir un nouveau lien.")
+        st.stop()
+
+    org_tok_id, org_tok_nom, org_tok_mail = org_tok
+    st.success(f"✅ Lien valide pour le compte **{org_tok_nom}**.")
+    st.markdown("Choisissez votre identifiant de connexion et votre mot de passe personnel.")
+
+    with st.form("form_activation_compte"):
+        nouvel_email = st.text_input("Votre adresse e-mail (identifiant de connexion) :",
+                                     value=org_tok_mail or "", placeholder="vous@exemple.fr")
+        nouveau_mdp_a = st.text_input("Choisissez un mot de passe :", type="password")
+        nouveau_mdp_b = st.text_input("Confirmez votre mot de passe :", type="password")
+        btn_activer = st.form_submit_button("🚀 Activer mon compte", type="primary", use_container_width=True)
+
+        if btn_activer:
+            nouvel_email = nouvel_email.strip().lower()
+            if not nouvel_email or not nouveau_mdp_a or not nouveau_mdp_b:
+                st.error("Merci de remplir tous les champs.")
+            elif nouveau_mdp_a != nouveau_mdp_b:
+                st.error("Les deux mots de passe ne correspondent pas.")
+            elif len(nouveau_mdp_a) < 8:
+                st.error("Le mot de passe doit faire au moins 8 caractères.")
+            else:
+                try:
+                    # Vérifier si l'e-mail est déjà pris
+                    c_tok.execute("SELECT id FROM utilisateurs WHERE email = %s", (nouvel_email,))
+                    if c_tok.fetchone():
+                        st.error("Cette adresse e-mail est déjà utilisée. Choisissez-en une autre.")
+                    else:
+                        # Mettre à jour ou créer l'utilisateur
+                        c_tok.execute(
+                            "SELECT id FROM utilisateurs WHERE organisation_id = %s", (org_tok_id,)
+                        )
+                        utilisateur_existant = c_tok.fetchone()
+                        if utilisateur_existant:
+                            c_tok.execute(
+                                "UPDATE utilisateurs SET email = %s, password = %s WHERE organisation_id = %s",
+                                (nouvel_email, hacher_mdp(nouveau_mdp_a), org_tok_id)
+                            )
+                        else:
+                            c_tok.execute(
+                                """INSERT INTO utilisateurs (email, password, date_fin_essai, est_admin, nb_requetes_ia, organisation_id)
+                                   VALUES (%s, %s, '2099-12-31', 0, 0, %s)""",
+                                (nouvel_email, hacher_mdp(nouveau_mdp_a), org_tok_id)
+                            )
+                        # Mettre à jour l'email_contact de l'organisation et invalider le token
+                        c_tok.execute(
+                            "UPDATE organisations SET email_contact = %s, token_creation_compte = NULL WHERE id = %s",
+                            (nouvel_email, org_tok_id)
+                        )
+                        conn_tok.commit()
+                        st.balloons()
+                        st.success("🎉 Votre compte est activé ! Vous pouvez maintenant vous connecter.")
+                        st.markdown(f"**Identifiant :** {nouvel_email}")
+                        st.info("Fermez cette page et connectez-vous sur l'application avec vos nouveaux identifiants.")
+                        st.query_params.clear()
+                except Exception as e_tok:
+                    st.error(f"Erreur lors de l'activation : {e_tok}")
+    st.stop()
 
 # --- DÉMARRAGE DE L'APPLICATION ---
 if not check_password():
@@ -1813,14 +1916,21 @@ if st.session_state.get("is_admin", False):
 
             if prospects_suppr:
                 user_a_supprimer = st.selectbox("Choisir le prospect à supprimer :", prospects_suppr, key="sb_delete_user")
+                st.warning("⚠️ Cette action supprimera le compte et toutes les données associées.")
                 if st.button("🗑️ Supprimer définitivement", key="btn_confirm_delete", type="primary"):
                     conn_del = get_connection()
                     c_d = conn_del.cursor()
+                    # Récupérer l'organisation liée avant de supprimer l'utilisateur
+                    c_d.execute("SELECT organisation_id FROM utilisateurs WHERE email = %s", (user_a_supprimer,))
+                    org_row = c_d.fetchone()
                     c_d.execute("DELETE FROM utilisateurs WHERE email = %s", (user_a_supprimer,))
+                    if org_row and org_row[0]:
+                        c_d.execute("DELETE FROM organisations WHERE id = %s AND est_organisation_admin = FALSE", (org_row[0],))
                     conn_del.commit()
                     _charger_prospects_liste.clear()
                     _charger_prospects_quotas.clear()
-                    st.success(f"Le prospect {user_a_supprimer} a été supprimé.")
+                    _charger_organisations_admin.clear()
+                    st.success(f"Le prospect {user_a_supprimer} et son organisation ont été supprimés.")
                     st.rerun()
             else:
                 st.info("Aucun prospect à supprimer.")
@@ -3732,6 +3842,34 @@ if st.session_state.get("page_active") == "🔐 ABONNEMENTS & CLIENTS":
                     )
                     st.caption("Le quota est partagé par tous les utilisateurs de ce compte.")
 
+                # --- Lien d'activation de compte (création identifiant/mdp par le prospect) ---
+                st.markdown("**🔑 Lien d'activation de compte**")
+                st.caption("Générez un lien unique à envoyer au prospect pour qu'il crée lui-même son identifiant et mot de passe. Ce lien n'est utilisable qu'une seule fois et uniquement si le statut est ACTIF ou PRO.")
+                _peut_generer_lien = nouveau_statut_org in ("ACTIF", "PRO") or o_statut in ("ACTIF", "PRO")
+                if _peut_generer_lien:
+                    if st.button(f"🔗 Générer un lien d'activation", key=f"gen_token_{o_id}", use_container_width=True):
+                        try:
+                            _token_new = secrets.token_urlsafe(32)
+                            conn_tok_gen = get_connection()
+                            c_tok_gen = conn_tok_gen.cursor()
+                            c_tok_gen.execute(
+                                "UPDATE organisations SET token_creation_compte = %s WHERE id = %s",
+                                (_token_new, o_id)
+                            )
+                            conn_tok_gen.commit()
+                            st.session_state[f"lien_activation_{o_id}"] = _token_new
+                        except Exception as e_tg:
+                            st.error(f"Erreur : {e_tg}")
+
+                    if st.session_state.get(f"lien_activation_{o_id}"):
+                        _tok_affiche = st.session_state[f"lien_activation_{o_id}"]
+                        _base_url = st.secrets.get("APP_BASE_URL", "https://votre-app.streamlit.app")
+                        _lien_complet = f"{_base_url}?setup_token={_tok_affiche}"
+                        st.info(f"📋 Lien à envoyer au prospect :\n\n`{_lien_complet}`")
+                        st.caption("⚠️ Ce lien est à usage unique. Une fois le compte créé, il ne fonctionnera plus.")
+                else:
+                    st.caption("⚠️ Le statut doit être ACTIF ou PRO pour générer un lien d'activation.")
+
                 cb1, cb2 = st.columns(2)
                 with cb1:
                     if st.button("💾 Appliquer", key=f"maj_org_{o_id}", use_container_width=True, type="primary"):
@@ -3765,5 +3903,37 @@ if st.session_state.get("page_active") == "🔐 ABONNEMENTS & CLIENTS":
                             st.rerun()
                         else:
                             st.error("Échec de la réinitialisation.")
+
+                st.markdown("---")
+                st.markdown("**⚠️ Zone dangereuse**")
+                confirmer_suppr_key = f"confirm_suppr_{o_id}"
+                if not st.session_state.get(confirmer_suppr_key):
+                    if st.button(f"🗑️ Supprimer définitivement ce compte", key=f"suppr_org_btn_{o_id}",
+                                 use_container_width=True):
+                        st.session_state[confirmer_suppr_key] = True
+                        st.rerun()
+                else:
+                    st.error(f"Confirmez-vous la suppression définitive de **{o_nom}** ? Cette action est irréversible.")
+                    col_oui, col_non = st.columns(2)
+                    with col_oui:
+                        if st.button("✅ Oui, supprimer", key=f"suppr_oui_{o_id}", use_container_width=True, type="primary"):
+                            try:
+                                conn_del_org = get_connection()
+                                c_del_org = conn_del_org.cursor()
+                                c_del_org.execute("DELETE FROM utilisateurs WHERE organisation_id = %s", (o_id,))
+                                c_del_org.execute("DELETE FROM organisations WHERE id = %s AND est_organisation_admin = FALSE", (o_id,))
+                                conn_del_org.commit()
+                                _charger_organisations_admin.clear()
+                                _charger_prospects_liste.clear()
+                                _charger_prospects_quotas.clear()
+                                st.session_state.pop(confirmer_suppr_key, None)
+                                st.success(f"✅ Compte « {o_nom} » supprimé définitivement.")
+                                st.rerun()
+                            except Exception as e_suppr:
+                                st.error(f"Erreur lors de la suppression : {e_suppr}")
+                    with col_non:
+                        if st.button("❌ Annuler", key=f"suppr_non_{o_id}", use_container_width=True):
+                            st.session_state.pop(confirmer_suppr_key, None)
+                            st.rerun()
 
             st.markdown("---")
