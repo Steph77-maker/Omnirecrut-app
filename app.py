@@ -60,23 +60,35 @@ def get_connection():
 
 
 def get_connexion_saine():
-    """À appeler à la place d'un accès direct à get_connection() : renvoie une
-    connexion vivante. Sur le pooler Supabase, une connexion trop longtemps
-    inactive peut être coupée côté serveur ; comme get_connection() est mise en
-    cache "pour toujours", elle resterait invalide jusqu'au redémarrage de
-    l'app sans ce test. Coût : un aller-retour très léger (SELECT 1), largement
-    compensé par la suppression des reconnexions/erreurs silencieuses."""
+    """Renvoie une connexion vivante en testant sa santé UNE SEULE FOIS par
+    session utilisateur (via session_state). Le SELECT 1 n'est donc émis qu'au
+    premier rerun de la session — pas à chaque changement d'onglet — ce qui
+    supprime l'aller-retour réseau superflu vers Supabase à chaque clic.
+
+    session_state est accessible dès le tout premier appel niveau module dans
+    Streamlit (c'est un singleton global), mais on protège les accès avec
+    try/except pour ne jamais bloquer le démarrage en cas de contexte inattendu."""
     conn_pg = get_connection()
     try:
-        with conn_pg.cursor() as c_test:
-            c_test.execute("SELECT 1")
+        deja_verifie = st.session_state.get("_conn_verifiee", False)
     except Exception:
+        deja_verifie = False  # premier appel avant init complète de Streamlit
+
+    if not deja_verifie:
         try:
-            conn_pg.close()
+            with conn_pg.cursor() as c_test:
+                c_test.execute("SELECT 1")
         except Exception:
-            pass
-        get_connection.clear()
-        conn_pg = get_connection()
+            try:
+                conn_pg.close()
+            except Exception:
+                pass
+            get_connection.clear()
+            conn_pg = get_connection()
+        try:
+            st.session_state["_conn_verifiee"] = True
+        except Exception:
+            pass  # si session_state n'est pas encore dispo, on retente au prochain rerun
     return conn_pg
 
 # --- CONFIGURATION DU THÈME VISUEL (DOIT ÊTRE AU TOUT DÉBUT) ---
@@ -1296,17 +1308,22 @@ if "page_active" not in st.session_state:
   st.session_state["page_active"] = "🗃️ VIVIER DE CANDIDATS"
 
 # --- CHARGEMENT AUTOMATIQUE VIA SECRETS.TOML ---
-try:
-  gemini_key = st.secrets["GEMINI_API_KEY"]
-  genai.configure(api_key=gemini_key)
-  st.sidebar.success("🔒 Clé API Gemini chargée (.secrets)")
-except Exception:
-  st.sidebar.warning("⚠️ Clé non trouvée dans secrets.toml")
-  api_key_input = st.sidebar.text_input(
-      "Collez votre clé API Google ici :", type="password"
-  )
-  if api_key_input:
-    genai.configure(api_key=api_key_input)
+# genai.configure n'est appelé qu'une seule fois par session (session_state),
+# pas à chaque rerun — évite un appel réseau/init inutile à chaque clic d'onglet.
+if not st.session_state.get("_gemini_configure"):
+    try:
+        gemini_key = st.secrets["GEMINI_API_KEY"]
+        genai.configure(api_key=gemini_key)
+        st.session_state["_gemini_configure"] = True
+    except Exception:
+        api_key_input = st.sidebar.text_input(
+            "🔑 Clé API Google Gemini :", type="password", key="gemini_api_input"
+        )
+        if api_key_input:
+            genai.configure(api_key=api_key_input)
+            st.session_state["_gemini_configure"] = True
+        else:
+            st.sidebar.warning("⚠️ Clé Gemini manquante dans secrets.toml")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("✉️ MA BOÎTE MAIL (ENVOIS & RECEPTION)")
@@ -1435,27 +1452,28 @@ if st.session_state.get("is_admin", False):
     # --- 2. SOUS-MENU : SUIVI & RÉINITIALISATION DES QUOTAS IA ---
     with st.sidebar.expander("📊 Quotas IA & Remise à 0"):
         try:
-            conn_q = get_connection()
-            c_q = conn_q.cursor()
-            c_q.execute("SELECT email, COALESCE(nb_requetes_ia, 0) FROM utilisateurs WHERE est_admin = 0")
-            prospects_data = c_q.fetchall()
+            # Mise en cache 30s : évite un aller-retour Supabase à chaque rerun
+            # quand l'expander est ouvert mais qu'aucune action n'a été effectuée.
+            @st.cache_data(ttl=30, show_spinner=False)
+            def _charger_prospects_quotas(_conn):
+                _c = _conn.cursor()
+                _c.execute("SELECT email, COALESCE(nb_requetes_ia, 0) FROM utilisateurs WHERE est_admin = 0")
+                return _c.fetchall()
+
+            prospects_data = _charger_prospects_quotas(conn)
 
             if prospects_data:
-                # Affichage de la consommation de chaque prospect
                 for email_p, nb_p in prospects_data:
                     st.caption(f"👤 **{email_p}** : {nb_p} / {LIMITE_REQUETES_IA} requêtes")
-
                 st.markdown("---")
-                
-                # Formulaire de réinitialisation
                 liste_emails = [p[0] for p in prospects_data]
                 target_user = st.selectbox("Réinitialiser l'utilisateur :", liste_emails, key="sb_reset_quota_sb")
-                
                 if st.button("🔄 Remettre le quota à 0", key="btn_reset_quota_sb"):
                     conn_res = get_connection()
                     c_res = conn_res.cursor()
                     c_res.execute("UPDATE utilisateurs SET nb_requetes_ia = 0 WHERE email = %s", (target_user,))
                     conn_res.commit()
+                    _charger_prospects_quotas.clear()
                     st.success(f"Quota réinitialisé pour {target_user} !")
                     st.rerun()
             else:
@@ -1468,19 +1486,23 @@ if st.session_state.get("is_admin", False):
     # --- 3. SOUS-MENU : SUPPRESSION D'UN PROSPECT ---
     with st.sidebar.expander("🗑️ Supprimer un Prospect"):
         try:
-            conn_del_list = get_connection()
-            c_dl = conn_del_list.cursor()
-            c_dl.execute("SELECT email FROM utilisateurs WHERE est_admin = 0")
-            prospects_suppr = [row[0] for row in c_dl.fetchall()]
+            @st.cache_data(ttl=30, show_spinner=False)
+            def _charger_prospects_liste(_conn):
+                _c = _conn.cursor()
+                _c.execute("SELECT email FROM utilisateurs WHERE est_admin = 0")
+                return [row[0] for row in _c.fetchall()]
+
+            prospects_suppr = _charger_prospects_liste(conn)
 
             if prospects_suppr:
                 user_a_supprimer = st.selectbox("Choisir le prospect à supprimer :", prospects_suppr, key="sb_delete_user")
-                
                 if st.button("🗑️ Supprimer définitivement", key="btn_confirm_delete", type="primary"):
                     conn_del = get_connection()
                     c_d = conn_del.cursor()
                     c_d.execute("DELETE FROM utilisateurs WHERE email = %s", (user_a_supprimer,))
                     conn_del.commit()
+                    _charger_prospects_liste.clear()
+                    _charger_prospects_quotas.clear()
                     st.success(f"Le prospect {user_a_supprimer} a été supprimé.")
                     st.rerun()
             else:
@@ -1564,45 +1586,47 @@ if st.session_state['page_active'] == "🧭 TABLEAU DE BORD":
 # --- ONGLET 1 : CONSULTATION DU VIVIER ---
 elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
     st.header("🗃️ Gestion et Pilotage du Vivier Interne")
-    
-    try:
-        c.execute(
-            "SELECT column_name FROM information_schema.columns WHERE table_name = %s",
-            ("candidats",),
-        )
-        colonnes_existantes = [info[0] for info in c.fetchall()]
-        
-        colonnes_requises = {
-            "nom": "TEXT",
-            "poste": "TEXT",
-            "competences": "TEXT",
-            "statut": "TEXT DEFAULT 'Disponible'",
-            "categorie_ia": "TEXT DEFAULT 'À Classer'",
-            "avis_ia": "TEXT",
-            "score_matching": "REAL",
-            "secteur_metier": "TEXT",
-            "type_rdv": "TEXT",
-            "date_rdv": "TEXT"
-        }
-        
-        for col, type_col in colonnes_requises.items():
-            if col not in colonnes_existantes:
-                if col == "poste" and ("poste_cible" in colonnes_existantes or "metier" in colonnes_existantes):
-                    continue
-                c.execute(f"ALTER TABLE candidats ADD COLUMN {col} {type_col}")
-                
-        nom_colonne_poste = "poste"
-        if "poste" not in colonnes_existantes:
-            if "poste_cible" in colonnes_existantes:
-                nom_colonne_poste = "poste_cible"
-            elif "metier" in colonnes_existantes:
-                nom_colonne_poste = "metier"
-    except Exception:
-        nom_colonne_poste = "poste"
+
+    # -- Vérification du schéma : une seule fois par session, pas à chaque rerun --
+    if not st.session_state.get("_vivier_schema_verifie"):
+        try:
+            c.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = %s",
+                ("candidats",),
+            )
+            colonnes_existantes = [info[0] for info in c.fetchall()]
+            colonnes_requises = {
+                "nom": "TEXT", "poste": "TEXT", "competences": "TEXT",
+                "statut": "TEXT DEFAULT 'Disponible'", "categorie_ia": "TEXT DEFAULT 'À Classer'",
+                "avis_ia": "TEXT", "score_matching": "REAL", "secteur_metier": "TEXT",
+                "type_rdv": "TEXT", "date_rdv": "TEXT",
+            }
+            for col, type_col in colonnes_requises.items():
+                if col not in colonnes_existantes:
+                    if col == "poste" and ("poste_cible" in colonnes_existantes or "metier" in colonnes_existantes):
+                        continue
+                    c.execute(f"ALTER TABLE candidats ADD COLUMN {col} {type_col}")
+            nom_col_poste_cached = "poste"
+            if "poste" not in colonnes_existantes:
+                nom_col_poste_cached = "poste_cible" if "poste_cible" in colonnes_existantes else "metier"
+            st.session_state["_vivier_schema_verifie"] = True
+            st.session_state["_vivier_nom_col_poste"] = nom_col_poste_cached
+        except Exception:
+            st.session_state["_vivier_nom_col_poste"] = "poste"
+
+    nom_colonne_poste = st.session_state.get("_vivier_nom_col_poste", "poste")
+
+    @st.cache_data(ttl=15, show_spinner=False)
+    def _stats_vivier(_conn):
+        _c = _conn.cursor()
+        _c.execute("""SELECT COUNT(*),
+            SUM(CASE WHEN statut LIKE '%Disponible%' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN statut LIKE '%mission%' THEN 1 ELSE 0 END)
+            FROM candidats""")
+        return _c.fetchone()
 
     try:
-        c.execute("SELECT COUNT(*), SUM(CASE WHEN statut LIKE '%Disponible%' THEN 1 ELSE 0 END), SUM(CASE WHEN statut LIKE '%mission%' THEN 1 ELSE 0 END) FROM candidats")
-        stats = c.fetchone()
+        stats = _stats_vivier(conn)
         total_cand = stats[0] if stats[0] else 0
         dispo_cand = stats[1] if stats[1] else 0
         mission_cand = stats[2] if stats[2] else 0
@@ -1904,8 +1928,15 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
 # --- ONGLET 2 : MATCHING AUTOMATISÉ ---
 elif st.session_state['page_active'] == "🎯 MATCHING IA OFFRES & CV":
     st.header("🎯 Module de Matching & Scoring Prédictif")
-    if 'derniers_matchs' not in st.session_state: st.session_state['derniers_matchs'] = []
-    
+
+    # -----------------------------------------------------------------------
+    # Initialisation des clés de session nécessaires à cet onglet
+    # -----------------------------------------------------------------------
+    if 'derniers_matchs' not in st.session_state:
+        st.session_state['derniers_matchs'] = []
+    if '_matching_fichiers_ids' not in st.session_state:
+        st.session_state['_matching_fichiers_ids'] = []
+
     valeur_par_defaut_offre = st.session_state['offre_transferee'] if st.session_state['offre_transferee'] else ""
     if st.session_state['offre_transferee']:
         st.info("💡 Une offre a été pré-chargée depuis l'onglet de rédaction.")
@@ -1914,171 +1945,279 @@ elif st.session_state['page_active'] == "🎯 MATCHING IA OFFRES & CV":
             st.rerun()
 
     col_offre, col_cvs = st.columns(2)
-    with col_offre: texte_offre = st.text_area("Annonce ou description du poste cible :", value=valeur_par_defaut_offre, height=250)
-    with col_cvs: fichiers_cv = st.file_uploader("Sélectionnez un ou plusieurs CV (Format PDF)", type=["pdf"], accept_multiple_files=True)
+    with col_offre:
+        texte_offre = st.text_area("Annonce ou description du poste cible :", value=valeur_par_defaut_offre, height=250)
+    with col_cvs:
+        fichiers_cv = st.file_uploader(
+            "Sélectionnez un ou plusieurs CV (Format PDF)",
+            type=["pdf"],
+            accept_multiple_files=True,
+            key="matching_uploader"
+        )
+
+    # -----------------------------------------------------------------------
+    # BUG FIX : Détection d'un changement de fichiers → nettoyage strict de session
+    # On utilise les noms+tailles comme empreinte légère (pas de hash binaire).
+    # -----------------------------------------------------------------------
+    if fichiers_cv is not None:
+        nouveaux_ids = sorted([f"{f.name}_{f.size}" for f in fichiers_cv])
+        if nouveaux_ids != st.session_state['_matching_fichiers_ids']:
+            # Nouveau(x) fichier(s) détecté(s) — on purge tout résultat précédent
+            st.session_state['derniers_matchs'] = []
+            st.session_state['_matching_fichiers_ids'] = nouveaux_ids
 
     if st.button("🚀 LANCER LE MATCHING INTELLIGENT"):
-        if not texte_offre or not fichiers_cv: 
+        if not texte_offre or not fichiers_cv:
             st.error("⚠️ Offre ou CV manquant.")
         elif not peut_utiliser_ia(st.session_state.get("user_email")):
             st.error("⚠️ Vous avez atteint votre quota mensuel de 300 requêtes IA. Contactez l'administrateur pour débloquer votre accès.")
         else:
             model = genai.GenerativeModel("gemini-2.5-flash")
             resultats_matching = []
-            
+
             for index, fichier in enumerate(fichiers_cv):
                 try:
                     reader = PdfReader(fichier)
                     texte_cv = "".join([page.extract_text() for page in reader.pages if page.extract_text()])
-                    
-                    # --- PROMPT ENRICHI : ANALYSE CONTEXTUELLE & COMPÉTENCES TRANSFÉRABLES ---
+
+                    # -------------------------------------------------------------------
+                    # PROMPT V2 : Sous-scores pondérés + catégorisation des compétences
+                    # -------------------------------------------------------------------
                     prompt = f"""
-                    Tu es un Expert Recruteur et Chasseur de Têtes, spécialisé dans la détection de potentiel
-                    au-delà du matching par mots-clés classique. Analyse ce CV par rapport à la fiche de poste fournie.
+Tu es un Expert Recruteur et Chasseur de Têtes, spécialisé dans la détection de potentiel
+au-delà du matching par mots-clés classique. Analyse ce CV par rapport à la fiche de poste fournie.
 
-                    CONSIGNES CLÉS :
-                    1. Ne te limite pas à la recherche stricte de mots-clés.
-                    2. Analyse la trajectoire, la cohérence du parcours et le potentiel du candidat.
-                    3. Détecte les compétences transférables et transversales (soft skills, organisation, relation
-                       client, gestion du stress, rigueur) acquises dans d'autres secteurs. Pour CHAQUE compétence
-                       transférable identifiée, indique explicitement de quelle expérience concrète du CV elle
-                       provient (ex : "Gestion du stress sous forte contrainte de temps — issue de 5 ans en cuisine
-                       de restauration rapide"). N'invente jamais une expérience qui ne figure pas dans le CV.
-                    4. Si le parcours ne permet pas d'identifier de compétence transférable pertinente pour ce poste,
-                       dis-le clairement plutôt que d'en inventer une pour combler.
+CONSIGNES CLÉS :
+1. Ne te limite pas à la recherche stricte de mots-clés.
+2. Analyse la trajectoire, la cohérence du parcours et le potentiel du candidat.
+3. Pour CHAQUE compétence identifiée, classe-la dans l'une de ces 3 catégories STRICTES :
+   - "demonstree" : clairement écrite ET justifiée dans le CV (diplôme, poste, mission explicite)
+   - "fortement_probable" : déduite logiquement d'une tâche ou réalisation factuelle présente dans le CV
+   - "transferable" : issue d'une expérience passée ou d'un autre secteur, applicable au poste cible
+   Pour chaque compétence transférable, indique explicitement de quelle expérience du CV elle provient.
+   N'invente JAMAIS une expérience ou compétence absente du CV.
+4. Si aucune compétence transférable pertinente n'existe, dis-le explicitement.
 
-                    Renvoie STRICTEMENT un objet JSON valide avec les clés suivantes :
-                    - 'nom': Prénom et Nom du candidat (ou 'Inconnu')
-                    - 'coordonnees': Téléphone et Email si présents
-                    - 'competences_directes': Compétences techniques/métier directement alignées avec l'offre
-                    - 'competences_transferables': Liste de compétences transférables, CHACUNE accompagnée de sa
-                       source ("compétence — issue de [expérience précise du CV]")
-                    - 'score_technique': Entier 0-100, adéquation sur les compétences techniques/mots-clés directs
-                    - 'score_potentiel': Entier 0-100, adéquation sur la trajectoire et les compétences transférables
-                    - 'score': Entier 0-100, score global pondéré (technique + potentiel)
-                    - 'justification': Synthèse de 3-4 lignes expliquant pourquoi ce profil est pertinent au-delà
-                       des simples mots-clés, en t'appuyant sur les éléments concrets identifiés ci-dessus.
+SCORE GLOBAL ET SOUS-SCORES (obligatoires) :
+Calcule et justifie 3 sous-scores distincts, puis le score global pondéré :
+- score_competences_directes : Entier 0-100 — adéquation sur les compétences directes & adéquation poste (poids 50%)
+- score_competences_transferables : Entier 0-100 — compétences transférables & potentiel (poids 35%)
+- score_experience_sectorielle : Entier 0-100 — expérience sectorielle & cadre (poids 15%)
+- score : Entier 0-100 — score GLOBAL = (score_competences_directes*0.50) + (score_competences_transferables*0.35) + (score_experience_sectorielle*0.15), arrondi à l'entier le plus proche.
 
-                    OFFRE :
-                    {texte_offre}
+Renvoie STRICTEMENT un objet JSON valide (aucun texte autour, aucun markdown) avec exactement ces clés :
+- "nom": Prénom et Nom du candidat (ou "Inconnu")
+- "coordonnees": Téléphone et Email si présents dans le CV
+- "competences": liste d'objets, CHAQUE objet ayant les clés "label" (nom de la compétence, str) et "categorie" (une des 3 valeurs exactes: "demonstree", "fortement_probable", "transferable") et optionnellement "source" (expérience d'origine, pour les catégories fortement_probable et transferable)
+- "score_competences_directes": entier 0-100
+- "score_competences_transferables": entier 0-100
+- "score_experience_sectorielle": entier 0-100
+- "score": entier 0-100 (score global pondéré calculé comme indiqué ci-dessus)
+- "justification": synthèse de 3-4 lignes expliquant le raisonnement global, en s'appuyant sur des éléments concrets du CV.
 
-                    CV :
-                    {texte_cv}
-                    """
-                    
+OFFRE :
+{texte_offre}
+
+CV :
+{texte_cv}
+"""
                     response = model.generate_content(prompt)
-                    txt = response.text.strip().replace("```json", "").replace("```", "").strip()
-                    data = json.loads(txt)
 
-                    competences_directes = data.get("competences_directes", "Non spécifié")
-                    competences_transferables_liste = data.get("competences_transferables", [])
-                    if isinstance(competences_transferables_liste, list):
-                        competences_transferables_txt = " | ".join(competences_transferables_liste)
+                    # -------------------------------------------------------------------
+                    # BUG FIX : Parsing sécurisé — gère str, dict et blocs markdown
+                    # -------------------------------------------------------------------
+                    raw = response.text
+                    if isinstance(raw, dict):
+                        data = raw
                     else:
-                        competences_transferables_txt = str(competences_transferables_liste)
+                        if not isinstance(raw, str):
+                            raw = str(raw)
+                        raw = raw.strip()
+                        # Suppression des balises markdown code block
+                        raw = raw.replace("```json", "").replace("```", "").strip()
+                        # Extraction du premier objet JSON {...} dans la réponse
+                        debut = raw.find("{")
+                        fin = raw.rfind("}")
+                        if debut != -1 and fin != -1:
+                            raw = raw[debut:fin + 1]
+                        try:
+                            data = json.loads(raw)
+                        except json.JSONDecodeError as json_err:
+                            raise ValueError(f"Réponse Gemini non parseable en JSON : {json_err} — Extrait : {raw[:200]}")
 
-                    resume_competences = f"{competences_directes}"
-                    if competences_transferables_txt:
-                        resume_competences += f" — Transférables : {competences_transferables_txt}"
+                    # Normalisation des compétences (liste d'objets ou liste de strings legacy)
+                    competences_brutes = data.get("competences", [])
+                    competences_normalisees = []
+                    if isinstance(competences_brutes, list):
+                        for item in competences_brutes:
+                            if isinstance(item, dict):
+                                competences_normalisees.append({
+                                    "label": str(item.get("label", item.get("competence", ""))),
+                                    "categorie": item.get("categorie", "demonstree"),
+                                    "source": item.get("source", ""),
+                                })
+                            elif isinstance(item, str):
+                                competences_normalisees.append({"label": item, "categorie": "demonstree", "source": ""})
+                    elif isinstance(competences_brutes, str):
+                        competences_normalisees.append({"label": competences_brutes, "categorie": "demonstree", "source": ""})
 
                     resultats_matching.append({
-                        "nom": data.get("nom", "Inconnu"), 
+                        "nom": data.get("nom", "Inconnu"),
                         "coordonnees": data.get("coordonnees", "Non spécifié"),
-                        "competences": resume_competences,
-                        "competences_directes": competences_directes,
-                        "competences_transferables_liste": competences_transferables_liste if isinstance(competences_transferables_liste, list) else [],
-                        "score_technique": str(data.get("score_technique", "0")),
-                        "score_potentiel": str(data.get("score_potentiel", "0")),
-                        "score": str(data.get("score", "0")),
-                        "justification": data.get("justification", "Pas d'avis"), 
-                        "cv_texte": texte_cv
+                        "competences_liste": competences_normalisees,
+                        "score_competences_directes": int(data.get("score_competences_directes", 0) or 0),
+                        "score_competences_transferables": int(data.get("score_competences_transferables", 0) or 0),
+                        "score_experience_sectorielle": int(data.get("score_experience_sectorielle", 0) or 0),
+                        "score": int(data.get("score", 0) or 0),
+                        "justification": data.get("justification", "Pas d'avis"),
+                        "cv_texte": texte_cv,
+                        # Champ legacy pour l'enregistrement vivier (résumé texte)
+                        "competences": " | ".join([c["label"] for c in competences_normalisees]),
                     })
 
-                    # Incrémentation du compteur (+1 par CV traité)
                     incrémenter_quota_ia(st.session_state.get("user_email"))
 
-                except Exception as e: 
+                except Exception as e:
                     st.error(f"Erreur fichier {fichier.name} : {e}")
-                    
+
             st.session_state['derniers_matchs'] = resultats_matching
             st.success("Analyse terminée !")
 
+    # -----------------------------------------------------------------------
+    # AFFICHAGE DES RÉSULTATS
+    # -----------------------------------------------------------------------
     if st.session_state['derniers_matchs']:
         st.markdown("---")
         st.subheader("📊 Résultats de l'analyse")
 
         resultats_tries = sorted(
             st.session_state['derniers_matchs'],
-            key=lambda x: int(x.get("score", "0") or 0),
+            key=lambda x: int(x.get("score", 0) or 0),
             reverse=True
         )
 
+        # Palettes badges catégories compétences
+        BADGE_STYLES = {
+            "demonstree": ("✅ Démontrée", "#1b4332", "#d1fae5"),
+            "fortement_probable": ("🔍 Fortement probable", "#713f12", "#fef9c3"),
+            "transferable": ("🔄 Transférable", "#1e3a5f", "#dbeafe"),
+        }
+
         for i, cand in enumerate(resultats_tries):
-            score_global = int(cand.get("score", "0") or 0)
-            score_tech = int(cand.get("score_technique", "0") or 0)
-            score_pot = int(cand.get("score_potentiel", "0") or 0)
+            score_global = int(cand.get("score", 0) or 0)
+            s_dir = int(cand.get("score_competences_directes", 0) or 0)
+            s_transf = int(cand.get("score_competences_transferables", 0) or 0)
+            s_sect = int(cand.get("score_experience_sectorielle", 0) or 0)
 
             if score_global >= 70:
-                couleur_badge = "#2e7d32"  # vert
+                couleur_badge = "#2e7d32"
             elif score_global >= 40:
-                couleur_badge = "#f59e0b"  # orange
+                couleur_badge = "#f59e0b"
             else:
-                couleur_badge = "#c53030"  # rouge
+                couleur_badge = "#c53030"
 
             with st.container():
+                # --- En-tête candidat + score global ---
                 st.markdown(f"""
-                    <div style="background-color: #2d3748; border-radius: 10px; padding: 18px; margin-bottom: 14px; border-left: 5px solid {couleur_badge};">
+                    <div style="background-color: #2d3748; border-radius: 10px; padding: 18px; margin-bottom: 10px; border-left: 5px solid {couleur_badge};">
                         <div style="display: flex; justify-content: space-between; align-items: center;">
                             <span style="font-size: 18px; font-weight: 700; color: #ffffff;">{cand.get('nom', 'Inconnu')}</span>
-                            <span style="background-color: {couleur_badge}; color: white; padding: 4px 14px; border-radius: 20px; font-weight: 700;">{score_global}%</span>
+                            <span style="background-color: {couleur_badge}; color: white; padding: 4px 14px; border-radius: 20px; font-weight: 700; font-size: 18px;">Score global : {score_global}%</span>
                         </div>
                         <div style="color: #a3b1cc; font-size: 13px; margin-top: 4px;">{cand.get('coordonnees', 'Non spécifié')}</div>
                     </div>
                 """, unsafe_allow_html=True)
 
-                col_score1, col_score2 = st.columns(2)
-                with col_score1:
-                    st.caption("🎯 Adéquation technique (mots-clés directs)")
-                    st.progress(min(1.0, score_tech / 100))
-                with col_score2:
-                    st.caption("🌱 Potentiel & compétences transférables")
-                    st.progress(min(1.0, score_pot / 100))
+                # --- AMÉLIORATION 1 : Sous-scores pondérés avec barres de progression ---
+                st.markdown("##### 📐 Détail du score — Transparence de la pondération")
+                col_s1, col_s2, col_s3 = st.columns(3)
+                with col_s1:
+                    st.metric(label="🎯 Compétences directes & poste (50%)", value=f"{s_dir}%")
+                    st.progress(min(1.0, s_dir / 100))
+                    contribution_dir = round(s_dir * 0.50)
+                    st.caption(f"Contribution au score global : **{contribution_dir} pts**")
+                with col_s2:
+                    st.metric(label="🌱 Compétences transférables & potentiel (35%)", value=f"{s_transf}%")
+                    st.progress(min(1.0, s_transf / 100))
+                    contribution_transf = round(s_transf * 0.35)
+                    st.caption(f"Contribution au score global : **{contribution_transf} pts**")
+                with col_s3:
+                    st.metric(label="🏭 Expérience sectorielle & cadre (15%)", value=f"{s_sect}%")
+                    st.progress(min(1.0, s_sect / 100))
+                    contribution_sect = round(s_sect * 0.15)
+                    st.caption(f"Contribution au score global : **{contribution_sect} pts**")
 
-                with st.expander(f"📋 Voir le détail du profil — {cand.get('nom', 'Inconnu')}"):
-                    st.markdown("**Compétences directes**")
-                    st.write(cand.get("competences_directes", "Non spécifié"))
+                # --- AMÉLIORATION 2 : Compétences catégorisées par badges ---
+                with st.expander(f"📋 Détail des compétences et synthèse — {cand.get('nom', 'Inconnu')}"):
+                    competences_liste = cand.get("competences_liste", [])
 
-                    liste_transf = cand.get("competences_transferables_liste", [])
-                    if liste_transf:
-                        st.markdown("**🌱 Compétences transférables détectées**")
-                        for comp in liste_transf:
-                            st.markdown(f"- {comp}")
+                    if competences_liste:
+                        st.markdown("##### 🏷️ Compétences extraites du CV — classées par catégorie")
+
+                        for cat_key, (cat_label, bg_color, text_color) in BADGE_STYLES.items():
+                            items_cat = [c for c in competences_liste if c.get("categorie") == cat_key]
+                            if items_cat:
+                                st.markdown(f"**{cat_label}**")
+                                badges_html = ""
+                                for comp in items_cat:
+                                    label = comp.get("label", "")
+                                    source = comp.get("source", "")
+                                    title_attr = f' title="{source}"' if source else ""
+                                    badges_html += (
+                                        f'<span{title_attr} style="background-color:{bg_color}; color:{text_color}; '
+                                        f'border: 1px solid {text_color}; padding:4px 11px; border-radius:14px; '
+                                        f'margin-right:6px; margin-bottom:6px; font-size:12px; display:inline-block;">'
+                                        f'{label}</span>'
+                                    )
+                                    if source:
+                                        badges_html += (
+                                            f'<span style="color:#94a3b8; font-size:11px; font-style:italic; '
+                                            f'margin-right:10px;">↳ {source}</span>'
+                                        )
+                                st.markdown(badges_html + "<br>", unsafe_allow_html=True)
                     else:
-                        st.caption("Aucune compétence transférable notable détectée pour ce poste.")
+                        st.caption("Aucune compétence extraite pour ce CV.")
 
-                    st.markdown("**Synthèse du recruteur IA**")
+                    st.markdown("---")
+                    st.markdown("**💬 Synthèse du recruteur IA**")
                     st.write(cand.get("justification", "Pas d'avis"))
 
                 st.markdown("<br>", unsafe_allow_html=True)
-        
+
     st.markdown("---")
     st.subheader("📥 Enregistrement ciblé dans le Vivier")
     secteur_pour_import = st.selectbox("Assigner ces candidats au secteur :", LISTE_SECTEURS[1:])
-    
+
     if st.button("📥 CONFIRMER L'ENREGISTREMENT DANS LE VIVIER"):
-        if not st.session_state['derniers_matchs']: st.warning("⚠️ Aucun résultat d'analyse en mémoire.")
+        if not st.session_state['derniers_matchs']:
+            st.warning("⚠️ Aucun résultat d'analyse en mémoire.")
         else:
             try:
                 for cand in st.session_state['derniers_matchs']:
-                    c.execute("""INSERT INTO candidats (nom, poste, competences, statut, categorie_ia, avis_ia, score_matching, secteur_metier, cv_texte, date_ajout) 
-                                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                              (cand["nom"], "Profil Analysé", f"{cand['coordonnees']} | {cand['competences']}", "Nouveau", "À Classer", cand["justification"], f"{cand['score']} %", secteur_pour_import, cand.get("cv_texte", ""), datetime.datetime.now().isoformat()))
+                    c.execute(
+                        """INSERT INTO candidats (nom, poste, competences, statut, categorie_ia, avis_ia, score_matching, secteur_metier, cv_texte, date_ajout)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                        (
+                            cand["nom"],
+                            "Profil Analysé",
+                            f"{cand['coordonnees']} | {cand['competences']}",
+                            "Nouveau",
+                            "À Classer",
+                            cand["justification"],
+                            f"{cand['score']} %",
+                            secteur_pour_import,
+                            cand.get("cv_texte", ""),
+                            datetime.datetime.now().isoformat(),
+                        )
+                    )
                 conn.commit()
                 _charger_vivier_candidats.clear()
                 st.success(f"✅ Candidat(s) enregistré(s) dans le secteur '{secteur_pour_import}' !")
                 st.session_state['derniers_matchs'] = []
+                st.session_state['_matching_fichiers_ids'] = []
                 st.rerun()
-            except Exception as e: st.error(f"Erreur d'enregistrement : {e}")
+            except Exception as e:
+                st.error(f"Erreur d'enregistrement : {e}")
 
 # --- ONGLET 3 : PORTEFEUILLE CLIENTS ---
 elif st.session_state["page_active"] == "🏢 PORTEFEUILLE CLIENTS":
@@ -2701,17 +2840,23 @@ elif st.session_state['page_active'] == "📊 PIPELINE DE RECRUTEMENT":
         </style>
     """, unsafe_allow_html=True)
 
-    # 1. Extraction des profils du vivier
-    try:
-        c.execute("SELECT id, nom, poste, statut, categorie, score_match FROM candidats")
-        candidats_pipeline = c.fetchall()
-    except Exception as e:
+    # 1. Extraction des profils du vivier (mise en cache 10s pour éviter un
+    #    aller-retour Supabase à chaque rerun pendant qu'on interagit sur la page)
+    @st.cache_data(ttl=10, show_spinner=False)
+    def _charger_pipeline(_conn):
+        _c = _conn.cursor()
         try:
-            c.execute("SELECT id, nom, poste, statut FROM candidats")
-            candidats_pipeline = [(row[0], row[1], row[2], row[3], "Profil Confirmé", "100%") for row in c.fetchall()]
-        except Exception as err:
-            st.error(f"Erreur base de données : {err}")
-            candidats_pipeline = []
+            _c.execute("SELECT id, nom, poste, statut, categorie_ia, score_matching FROM candidats")
+            return _c.fetchall()
+        except Exception:
+            _c.execute("SELECT id, nom, poste, statut FROM candidats")
+            return [(r[0], r[1], r[2], r[3], "Profil Confirmé", "100%") for r in _c.fetchall()]
+
+    try:
+        candidats_pipeline = _charger_pipeline(conn)
+    except Exception as err:
+        st.error(f"Erreur base de données : {err}")
+        candidats_pipeline = []
 
     # 2. Définition des 3 étapes clés du processus
     statuts_kanban = ["Disponible", "En entretien", "En mission"]
@@ -2770,6 +2915,7 @@ elif st.session_state['page_active'] == "📊 PIPELINE DE RECRUTEMENT":
                         c.execute("UPDATE candidats SET statut = %s WHERE id = %s", (nouveau_statut, candidat['id']))
                         conn.commit()
                         _charger_vivier_candidats.clear()
+                        _charger_pipeline.clear()
                         st.success(f"🔄 {candidat['nom']} mis à jour.")
                         st.rerun()
                     except Exception as e:
