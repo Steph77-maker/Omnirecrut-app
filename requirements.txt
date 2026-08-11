@@ -6,3 +6,4 @@ fpdf2
 reportlab
 bcrypt
 psycopg2-binary
+cryptography
