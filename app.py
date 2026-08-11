@@ -36,10 +36,9 @@ import streamlit as st
 # entre les reruns Streamlit, au lieu d'en recréer une à chaque appel comme
 # le faisait le code SQLite d'origine.
 # ==============================================================================
-@st.cache_resource(show_spinner=False)
-def get_connection():
+def _ouvrir_connexion_pg():
     url = st.secrets["connections"]["supabase"]["url"]
-    conn_pg = psycopg2.connect(url)
+    conn_pg = psycopg2.connect(url, connect_timeout=10)
     # Autocommit : chaque instruction est validée immédiatement. C'est le choix
     # le plus proche du comportement SQLite d'origine (isolation_level=None,
     # càd autocommit) et surtout le plus sûr ici : de nombreux blocs du code
@@ -49,6 +48,35 @@ def get_connection():
     # pas exécuté — ce qui casserait les requêtes suivantes sur cette même
     # connexion. L'autocommit évite ce piège sans toucher à la logique métier.
     conn_pg.autocommit = True
+    return conn_pg
+
+
+@st.cache_resource(show_spinner=False)
+def get_connection():
+    """Une seule connexion PostgreSQL est ouverte et réutilisée pour toute la
+    durée de vie du processus Streamlit (grâce à st.cache_resource), au lieu
+    d'en recréer une à chaque rerun (= à chaque clic)."""
+    return _ouvrir_connexion_pg()
+
+
+def get_connexion_saine():
+    """À appeler à la place d'un accès direct à get_connection() : renvoie une
+    connexion vivante. Sur le pooler Supabase, une connexion trop longtemps
+    inactive peut être coupée côté serveur ; comme get_connection() est mise en
+    cache "pour toujours", elle resterait invalide jusqu'au redémarrage de
+    l'app sans ce test. Coût : un aller-retour très léger (SELECT 1), largement
+    compensé par la suppression des reconnexions/erreurs silencieuses."""
+    conn_pg = get_connection()
+    try:
+        with conn_pg.cursor() as c_test:
+            c_test.execute("SELECT 1")
+    except Exception:
+        try:
+            conn_pg.close()
+        except Exception:
+            pass
+        get_connection.clear()
+        conn_pg = get_connection()
     return conn_pg
 
 # --- CONFIGURATION DU THÈME VISUEL (DOIT ÊTRE AU TOUT DÉBUT) ---
@@ -109,6 +137,10 @@ def incrémenter_quota_ia(email_utilisateur):
             c_q = conn_q.cursor()
             c_q.execute("UPDATE utilisateurs SET nb_requetes_ia = COALESCE(nb_requetes_ia, 0) + 1 WHERE email = %s", (email_utilisateur,))
             conn_q.commit()
+            try:
+                _charger_quota_utilisateur.clear()
+            except NameError:
+                pass  # fonction pas encore définie au premier import, sans impact
         except Exception:
             pass
 
@@ -119,6 +151,10 @@ def reinitialiser_quota_ia(email_utilisateur):
         c_q = conn_q.cursor()
         c_q.execute("UPDATE utilisateurs SET nb_requetes_ia = 0 WHERE email = %s", (email_utilisateur,))
         conn_q.commit()
+        try:
+            _charger_quota_utilisateur.clear()
+        except NameError:
+            pass
         return True
     except Exception:
         return False
@@ -451,35 +487,55 @@ except ModuleNotFoundError:
 # ==============================================================================
 # 1. CONNEXION ET INITIALISATION DE LA BASE DE DONNÉES SUPABASE / PostgreSQL (définition de c)
 # ==============================================================================
-conn = get_connection()
+conn = get_connexion_saine()
 c = conn.cursor()
 
-c.execute("""CREATE TABLE IF NOT EXISTS candidats 
-             (id SERIAL PRIMARY KEY, nom TEXT, poste TEXT, competences TEXT, 
-             statut TEXT, categorie_ia TEXT, avis_ia TEXT, score_matching TEXT, secteur_metier TEXT DEFAULT 'Non spécifié', cv_texte TEXT DEFAULT '')""")
 
-try:
-    c.execute("ALTER TABLE candidats ADD COLUMN type_rdv TEXT")
-    c.execute("ALTER TABLE candidats ADD COLUMN date_rdv TEXT")
-except Exception:
-    pass
+# ==============================================================================
+# --- MIGRATIONS DE SCHÉMA : exécutées UNE SEULE FOIS par processus ---
+# Avant cette correction, tous les CREATE TABLE IF NOT EXISTS / ALTER TABLE de
+# cette section s'exécutaient à CHAQUE rerun Streamlit, donc à chaque clic /
+# changement d'onglet : ~20 allers-retours réseau vers Supabase rien que pour
+# vérifier un schéma qui ne change jamais après le premier lancement. En local
+# (connexion directe, faible latence) cela ne se voyait pas ; en ligne, via le
+# pooler, chaque aller-retour supplémentaire coûte cher et ça s'additionne.
+# @st.cache_resource garantit que cette fonction n'est réellement exécutée
+# qu'une fois par processus serveur (comme get_connection), peu importe le
+# nombre de reruns ou de sessions utilisateur ensuite.
+# ==============================================================================
+@st.cache_resource(show_spinner=False)
+def _migrer_schema_candidats(_conn):
+    c_mig = _conn.cursor()
+    c_mig.execute("""CREATE TABLE IF NOT EXISTS candidats 
+                 (id SERIAL PRIMARY KEY, nom TEXT, poste TEXT, competences TEXT, 
+                 statut TEXT, categorie_ia TEXT, avis_ia TEXT, score_matching TEXT, secteur_metier TEXT DEFAULT 'Non spécifié', cv_texte TEXT DEFAULT '')""")
 
-try:
-    c.execute("ALTER TABLE candidats ADD COLUMN cv_texte TEXT DEFAULT ''")
-except Exception:
-    pass
-
-# --- Colonnes étendues pour l'agent d'analyse enrichie (vivier, sans offre) ---
-for _col, _type in {
-    "competences_transferables": "TEXT",
-    "profil_riasec": "TEXT",
-    "metiers_cibles": "TEXT",
-    "date_ajout": "TEXT",
-}.items():
     try:
-        c.execute(f"ALTER TABLE candidats ADD COLUMN {_col} {_type}")
+        c_mig.execute("ALTER TABLE candidats ADD COLUMN type_rdv TEXT")
+        c_mig.execute("ALTER TABLE candidats ADD COLUMN date_rdv TEXT")
     except Exception:
         pass
+
+    try:
+        c_mig.execute("ALTER TABLE candidats ADD COLUMN cv_texte TEXT DEFAULT ''")
+    except Exception:
+        pass
+
+    # --- Colonnes étendues pour l'agent d'analyse enrichie (vivier, sans offre) ---
+    for _col, _type in {
+        "competences_transferables": "TEXT",
+        "profil_riasec": "TEXT",
+        "metiers_cibles": "TEXT",
+        "date_ajout": "TEXT",
+    }.items():
+        try:
+            c_mig.execute(f"ALTER TABLE candidats ADD COLUMN {_col} {_type}")
+        except Exception:
+            pass
+    return True
+
+
+_migrer_schema_candidats(conn)
 
 # ==============================================================================
 # --- AGENT IA D'ANALYSE ENRICHIE DE CV (function calling Gemini) ---
@@ -741,18 +797,6 @@ def analyser_cv_avec_agent(texte_cv: str, secteur_metier: str, max_tentatives: i
             continue
 
 
-c.execute("""CREATE TABLE IF NOT EXISTS clients 
-             (id SERIAL PRIMARY KEY, entreprise TEXT, secteur TEXT, contact TEXT, 
-             secteur_activite TEXT DEFAULT 'Non spécifié', tel TEXT, email TEXT, priorite TEXT, notes TEXT)""")
-
-try:
-    c.execute("SELECT secteur_geo FROM clients LIMIT 1")
-except Exception:
-    try:
-        c.execute("ALTER TABLE clients ADD COLUMN secteur_geo TEXT DEFAULT 'Béziers'")
-    except Exception:
-        pass
-
 # ==============================================================================
 # --- VEILLE PROACTIVE : besoins clients persistés + alertes de matching ---
 # Un besoin client est désormais enregistré en base (au lieu d'être éphémère).
@@ -763,28 +807,48 @@ except Exception:
 
 SEUIL_ALERTE_MATCHING = 70  # score mini (0-100) pour déclencher une alerte
 
-c.execute("""CREATE TABLE IF NOT EXISTS besoins_clients (
-    id SERIAL PRIMARY KEY,
-    entreprise TEXT,
-    secteur TEXT,
-    description TEXT,
-    statut TEXT DEFAULT 'Ouvert',
-    date_creation TEXT
-)""")
 
-c.execute("""CREATE TABLE IF NOT EXISTS alertes_matching (
-    id SERIAL PRIMARY KEY,
-    candidat_id INTEGER,
-    candidat_nom TEXT,
-    besoin_id INTEGER,
-    besoin_entreprise TEXT,
-    besoin_description TEXT,
-    score INTEGER,
-    raison TEXT,
-    lue INTEGER DEFAULT 0,
-    date_alerte TEXT
-)""")
-conn.commit()
+@st.cache_resource(show_spinner=False)
+def _migrer_schema_clients_et_alertes(_conn):
+    c_mig = _conn.cursor()
+    c_mig.execute("""CREATE TABLE IF NOT EXISTS clients 
+                 (id SERIAL PRIMARY KEY, entreprise TEXT, secteur TEXT, contact TEXT, 
+                 secteur_activite TEXT DEFAULT 'Non spécifié', tel TEXT, email TEXT, priorite TEXT, notes TEXT)""")
+
+    try:
+        c_mig.execute("SELECT secteur_geo FROM clients LIMIT 1")
+    except Exception:
+        try:
+            c_mig.execute("ALTER TABLE clients ADD COLUMN secteur_geo TEXT DEFAULT 'Béziers'")
+        except Exception:
+            pass
+
+    c_mig.execute("""CREATE TABLE IF NOT EXISTS besoins_clients (
+        id SERIAL PRIMARY KEY,
+        entreprise TEXT,
+        secteur TEXT,
+        description TEXT,
+        statut TEXT DEFAULT 'Ouvert',
+        date_creation TEXT
+    )""")
+
+    c_mig.execute("""CREATE TABLE IF NOT EXISTS alertes_matching (
+        id SERIAL PRIMARY KEY,
+        candidat_id INTEGER,
+        candidat_nom TEXT,
+        besoin_id INTEGER,
+        besoin_entreprise TEXT,
+        besoin_description TEXT,
+        score INTEGER,
+        raison TEXT,
+        lue INTEGER DEFAULT 0,
+        date_alerte TEXT
+    )""")
+    _conn.commit()
+    return True
+
+
+_migrer_schema_clients_et_alertes(conn)
 
 
 def _extraire_json_liste(texte_brut: str) -> list:
@@ -902,9 +966,37 @@ Renvoie STRICTEMENT un tableau JSON, un objet par candidat, avec les clés :
 #   explicite, après relecture du brouillon ou de la suggestion à l'écran.
 # ==============================================================================
 
+@st.cache_data(ttl=15, show_spinner=False)
+def _charger_vivier_candidats(_conn, colonne_poste):
+    """Chargement de la table candidats pour l'onglet Vivier. Défini au niveau
+    module (et pas dans le bloc de l'onglet) pour que le cache soit le même
+    objet quelle que soit la page qui appelle .clear() après une écriture sur
+    la table candidats — sinon chaque page aurait sa propre fonction/cache et
+    une modification faite depuis un autre onglet resterait invisible ici."""
+    c_v = _conn.cursor()
+    c_v.execute(f"SELECT id, nom, {colonne_poste}, competences, statut, categorie_ia, avis_ia, score_matching, secteur_metier FROM candidats")
+    return c_v.fetchall()
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def _charger_clients(_conn):
+    """Chargement de la table clients pour l'onglet Portefeuille Clients.
+    Même logique que _charger_vivier_candidats : défini au niveau module pour
+    que .clear() invalide bien le même cache quel que soit l'endroit du
+    fichier où une écriture a lieu sur la table clients."""
+    return pd.read_sql_query(
+        "SELECT id, entreprise, secteur, contact, tel, email, secteur_activite,"
+        " priorite, notes FROM clients",
+        _conn,
+    )
+
+
+@st.cache_data(ttl=60, show_spinner=False)
 def generer_digest_quotidien() -> dict:
     """Purement déterministe — AUCUN appel IA ici. Agrège des faits déjà en base,
-    ne prend et ne suggère aucune décision."""
+    ne prend et ne suggère aucune décision.
+    Mis en cache 60s : ces 4 requêtes n'ont pas besoin d'être rejouées à chaque
+    rerun du tableau de bord, seulement quand la minute a tourné."""
     digest = {}
     try:
         c.execute("SELECT COUNT(*) FROM alertes_matching WHERE lue = 0")
@@ -1005,6 +1097,11 @@ if query_params.get("payment") == "success":
     user_email = st.session_state.get("user_email")
     if user_email:
         c.execute("UPDATE utilisateurs SET statut_abonnement = 'PRO', quota_max = 999999 WHERE email = %s", (user_email,))
+        conn.commit()
+        try:
+            _charger_quota_utilisateur.clear()
+        except NameError:
+            pass  # première exécution du process : le cache n'existe pas encore, rien à invalider
         st.session_state['user_statut'] = 'PRO'
         st.balloons()
         st.success("🎉 Félicitations ! Votre abonnement PRO Illimité est actif.")
@@ -1013,22 +1110,37 @@ if query_params.get("payment") == "success":
 # ==============================================================================
 # 3. PANNEAU LATÉRAL (SIDEBAR) : QUOTAS & BOUTON STRIPE
 # ==============================================================================
+@st.cache_data(ttl=20, show_spinner=False)
+def _charger_alertes_sidebar(_conn):
+    """Regroupe les 2 requêtes affichées dans la sidebar à CHAQUE rerun (donc à
+    chaque clic, quel que soit l'onglet actif) en un seul appel mis en cache
+    20s. Sans ce cache, ces requêtes partaient vers Supabase même quand
+    l'utilisateur ne fait qu'ouvrir/fermer un onglet sans rapport avec les
+    alertes."""
+    c_al = _conn.cursor()
+    c_al.execute("SELECT COUNT(*) FROM alertes_matching WHERE lue = 0")
+    nb = c_al.fetchone()[0] or 0
+    c_al.execute("""SELECT id, candidat_nom, besoin_entreprise, besoin_description, score, raison, lue
+                     FROM alertes_matching ORDER BY lue ASC, id DESC LIMIT 15""")
+    lignes = c_al.fetchall()
+    return nb, lignes
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _charger_quota_utilisateur(_conn, email):
+    c_q = _conn.cursor()
+    c_q.execute("SELECT nb_requetes_ia, quota_max, statut_abonnement FROM utilisateurs WHERE email = %s", (email,))
+    return c_q.fetchone()
+
+
 with st.sidebar:
     # --- 🔔 ALERTES DE MATCHING (veille proactive) ---
     try:
-        c.execute("SELECT COUNT(*) FROM alertes_matching WHERE lue = 0")
-        nb_alertes_non_lues = c.fetchone()[0] or 0
+        nb_alertes_non_lues, lignes_alertes = _charger_alertes_sidebar(conn)
     except Exception:
-        nb_alertes_non_lues = 0
+        nb_alertes_non_lues, lignes_alertes = 0, []
 
     with st.expander(f"🔔 Alertes de matching ({nb_alertes_non_lues})", expanded=(nb_alertes_non_lues > 0)):
-        try:
-            c.execute("""SELECT id, candidat_nom, besoin_entreprise, besoin_description, score, raison, lue
-                         FROM alertes_matching ORDER BY lue ASC, id DESC LIMIT 15""")
-            lignes_alertes = c.fetchall()
-        except Exception:
-            lignes_alertes = []
-
         if not lignes_alertes:
             st.caption("Aucune alerte pour le moment.")
         else:
@@ -1040,15 +1152,15 @@ with st.sidebar:
                     if st.button("✅ Marquer comme lue", key=f"lue_{alerte_id}", use_container_width=True):
                         c.execute("UPDATE alertes_matching SET lue = 1 WHERE id = %s", (alerte_id,))
                         conn.commit()
+                        _charger_alertes_sidebar.clear()  # on invalide le cache : sinon le badge resterait faux jusqu'à 20s
                         st.rerun()
                 st.markdown("---")
 
     st.markdown("<h3 style='color: #ffffff !important;'>⚙️ Mon Compte</h3>", unsafe_allow_html=True)
     user_email = st.session_state.get("user_email", "")
     
-    # Récupération de l'état du quota et du statut
-    c.execute("SELECT nb_requetes_ia, quota_max, statut_abonnement FROM utilisateurs WHERE email = %s", (user_email,))
-    res_u = c.fetchone()
+    # Récupération de l'état du quota et du statut (mise en cache 30s)
+    res_u = _charger_quota_utilisateur(conn, user_email)
     
     quota_utilise = res_u[0] if res_u and res_u[0] is not None else 0
     quota_max = res_u[1] if res_u and res_u[1] is not None else 300
@@ -1085,44 +1197,52 @@ with st.sidebar:
     st.markdown("---")
 
 # --- TABLES RH & ADMINISTRATIVES ---
-c.execute("""CREATE TABLE IF NOT EXISTS contrats (
-                id SERIAL PRIMARY KEY,
-                candidat_nom TEXT,
-                entreprise_nom TEXT,
-                type_contrat TEXT,
-                poste TEXT,
-                date_debut TEXT,
-                convention_collective TEXT,
-                statut_medecine TEXT DEFAULT 'À planifier',
-                date_limite_medecine TEXT,
-                date_fin TEXT,
-                suivi_medical_notes TEXT
-            )""")
+@st.cache_resource(show_spinner=False)
+def _migrer_schema_contrats_et_heures(_conn):
+    c_mig = _conn.cursor()
+    c_mig.execute("""CREATE TABLE IF NOT EXISTS contrats (
+                    id SERIAL PRIMARY KEY,
+                    candidat_nom TEXT,
+                    entreprise_nom TEXT,
+                    type_contrat TEXT,
+                    poste TEXT,
+                    date_debut TEXT,
+                    convention_collective TEXT,
+                    statut_medecine TEXT DEFAULT 'À planifier',
+                    date_limite_medecine TEXT,
+                    date_fin TEXT,
+                    suivi_medical_notes TEXT
+                )""")
 
-try:
-  c.execute("ALTER TABLE contrats ADD COLUMN date_fin TEXT")
-except Exception:
-  pass
+    try:
+        c_mig.execute("ALTER TABLE contrats ADD COLUMN date_fin TEXT")
+    except Exception:
+        pass
 
-try:
-  c.execute("ALTER TABLE contrats ADD COLUMN suivi_medical_notes TEXT")
-except Exception:
-  pass
+    try:
+        c_mig.execute("ALTER TABLE contrats ADD COLUMN suivi_medical_notes TEXT")
+    except Exception:
+        pass
 
-try:
-  c.execute("ALTER TABLE contrats ADD COLUMN suggestion_ia_medecine TEXT")
-except Exception:
-  pass
+    try:
+        c_mig.execute("ALTER TABLE contrats ADD COLUMN suggestion_ia_medecine TEXT")
+    except Exception:
+        pass
 
-c.execute("""CREATE TABLE IF NOT EXISTS suivi_heures (
-                id SERIAL PRIMARY KEY,
-                candidat_nom TEXT,
-                entreprise_nom TEXT,
-                semaine TEXT,
-                heures_normales REAL DEFAULT 0,
-                heures_sup_25 REAL DEFAULT 0,
-                heures_sup_50 REAL DEFAULT 0
-            )""")
+    c_mig.execute("""CREATE TABLE IF NOT EXISTS suivi_heures (
+                    id SERIAL PRIMARY KEY,
+                    candidat_nom TEXT,
+                    entreprise_nom TEXT,
+                    semaine TEXT,
+                    heures_normales REAL DEFAULT 0,
+                    heures_sup_25 REAL DEFAULT 0,
+                    heures_sup_50 REAL DEFAULT 0
+                )""")
+    _conn.commit()
+    return True
+
+
+_migrer_schema_contrats_et_heures(conn)
 
 LISTE_SECTEURS = [
     "Tous",
@@ -1615,10 +1735,9 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
     st.markdown("---")
     st.subheader("🔍 Filtrage des Talents par Secteur d'Activité")
     secteur_filtre = st.selectbox("Sélectionnez le secteur à afficher :", LISTE_SECTEURS)
-    
+
     try:
-        c.execute(f"SELECT id, nom, {nom_colonne_poste}, competences, statut, categorie_ia, avis_ia, score_matching, secteur_metier FROM candidats")
-        donnees = c.fetchall()
+        donnees = _charger_vivier_candidats(conn, nom_colonne_poste)
         if donnees:
             df_vivier = pd.DataFrame(donnees, columns=["ID", "Nom", "Poste", "Coordonnées / Compétences", "Statut", "Catégorie", "Avis IA", "Score Match", "Secteur Métier"])
             if secteur_filtre != "Tous":
@@ -1674,6 +1793,8 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
                                 c.execute(f"UPDATE candidats SET {nom_colonne_sql} = %s WHERE id = %s", (nouvelle_valeur, id_candidat))
                                 vivier_modifie = True
                     if vivier_modifie:
+                        conn.commit()
+                        _charger_vivier_candidats.clear()
                         st.success("Modifications du vivier enregistrées !")
                         st.rerun()
 
@@ -1715,6 +1836,7 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
                         try:
                             c.execute("DELETE FROM candidats WHERE id = %s", (id_selectionne,))
                             conn.commit()
+                            _charger_vivier_candidats.clear()
                             st.success(f"Le candidat {candidat_selectionne} a été supprimé.")
                             st.rerun()
                         except Exception as e:
@@ -1951,6 +2073,8 @@ elif st.session_state['page_active'] == "🎯 MATCHING IA OFFRES & CV":
                     c.execute("""INSERT INTO candidats (nom, poste, competences, statut, categorie_ia, avis_ia, score_matching, secteur_metier, cv_texte, date_ajout) 
                                  VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                               (cand["nom"], "Profil Analysé", f"{cand['coordonnees']} | {cand['competences']}", "Nouveau", "À Classer", cand["justification"], f"{cand['score']} %", secteur_pour_import, cand.get("cv_texte", ""), datetime.datetime.now().isoformat()))
+                conn.commit()
+                _charger_vivier_candidats.clear()
                 st.success(f"✅ Candidat(s) enregistré(s) dans le secteur '{secteur_pour_import}' !")
                 st.session_state['derniers_matchs'] = []
                 st.rerun()
@@ -2000,17 +2124,15 @@ elif st.session_state["page_active"] == "🏢 PORTEFEUILLE CLIENTS":
                 notes,
             ),
         )
+        conn.commit()
+        _charger_clients.clear()
         st.success("Compte client ajouté !")
         st.rerun()
 
   with col_filtre:
     st.subheader("🔍 Vos Comptes")
     try:
-      df_clients = pd.read_sql_query(
-          "SELECT id, entreprise, secteur, contact, tel, email, secteur_activite,"
-          " priorite, notes FROM clients",
-          conn,
-      )
+      df_clients = _charger_clients(conn)
       if not df_clients.empty:
         cols_to_show = df_clients[[
             "id",
@@ -2047,6 +2169,8 @@ elif st.session_state["page_active"] == "🏢 PORTEFEUILLE CLIENTS":
                     row["id"],
                 ),
             )
+          conn.commit()
+          _charger_clients.clear()
           st.success("Modifications enregistrées !")
           st.rerun()
 
@@ -2084,6 +2208,8 @@ elif st.session_state["page_active"] == "🏢 PORTEFEUILLE CLIENTS":
                 "DELETE FROM clients WHERE entreprise = %s",
                 (client_a_supprimer,),
             )
+            conn.commit()
+            _charger_clients.clear()
             st.success(f"Client {client_a_supprimer} supprimé avec succès !")
             st.rerun()
 
@@ -2643,6 +2769,7 @@ elif st.session_state['page_active'] == "📊 PIPELINE DE RECRUTEMENT":
                     try:
                         c.execute("UPDATE candidats SET statut = %s WHERE id = %s", (nouveau_statut, candidat['id']))
                         conn.commit()
+                        _charger_vivier_candidats.clear()
                         st.success(f"🔄 {candidat['nom']} mis à jour.")
                         st.rerun()
                     except Exception as e:
@@ -2756,22 +2883,30 @@ elif st.session_state['page_active'] == "📋 GESTION ADMINISTRATIVE & RH":
     ])
     
     # Récupération dynamique globale des candidats et entreprises
-    try:
-        c.execute("SELECT nom, poste FROM candidats")
-        candidats_bruts = c.fetchall()
-        list_cand = [f"{row[0]} ({row[1]})" for row in candidats_bruts]
-        noms_purs_candidats = [row[0] for row in candidats_bruts]
-        
-        c.execute("SELECT meta_entreprise FROM contrats LIMIT 1")  # Vérification colonne
-        entreprise_col = "meta_entreprise"
-    except Exception:
-        entreprise_col = "entreprise_nom"
+    @st.cache_data(ttl=15, show_spinner=False)
+    def _charger_listes_rh(_conn):
+        c_rh = _conn.cursor()
+        c_rh.execute("SELECT nom, poste FROM candidats")
+        cand_bruts = c_rh.fetchall()
+        try:
+            c_rh.execute("SELECT meta_entreprise FROM contrats LIMIT 1")  # Vérification colonne
+            col_entreprise = "meta_entreprise"
+        except Exception:
+            col_entreprise = "entreprise_nom"
+        try:
+            c_rh.execute("SELECT entreprise FROM clients")
+            clients_bruts = [row[0] for row in c_rh.fetchall()]
+        except Exception:
+            clients_bruts = []
+        return cand_bruts, col_entreprise, clients_bruts
 
     try:
-        c.execute("SELECT entreprise FROM clients")
-        list_cli = [row[0] for row in c.fetchall()]
+        candidats_bruts, entreprise_col, list_cli = _charger_listes_rh(conn)
+        list_cand = [f"{row[0]} ({row[1]})" for row in candidats_bruts]
+        noms_purs_candidats = [row[0] for row in candidats_bruts]
     except Exception:
-        list_cli = []
+        entreprise_col = "entreprise_nom"
+        list_cand, noms_purs_candidats, list_cli = [], [], []
         
     # ==============================================================================
     # SOUS-ONGLET 1 : ÉDITION DE CONTRAT & CCN (VERSION SÉCURISÉE)
@@ -2816,6 +2951,7 @@ elif st.session_state['page_active'] == "📋 GESTION ADMINISTRATIVE & RH":
                 id_nouveau_contrat = c.fetchone()[0]
                 c.execute("UPDATE candidats SET statut = %s, poste = %s WHERE nom = %s", ("En mission", saisie_poste, salarie_clean))
                 conn.commit()
+                _charger_vivier_candidats.clear()
 
                 # --- Veille réglementaire proactive : suggestion générée automatiquement,
                 # stockée à part, JAMAIS injectée dans les notes officielles sans validation
@@ -2952,6 +3088,7 @@ Signature de l'employeur                 Signature du salarié
                             c.execute("DELETE FROM contrats WHERE candidat_nom = %s", (candidat_selectionne_filtre,))
                             c.execute("UPDATE candidats SET statut = 'Disponible' WHERE nom = %s", (candidat_selectionne_filtre,))
                             conn.commit()
+                            _charger_vivier_candidats.clear()
                             
                             if editor_key in st.session_state:
                                 del st.session_state[editor_key]
