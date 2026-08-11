@@ -340,10 +340,28 @@ def _bootstrap_schema_auth():
     Exécuté une seule fois par processus, jamais à chaque rerun."""
     conn_auth = get_connection()
     c_auth = conn_auth.cursor()
+
+    # Si la table organisations existe, la migration multi-locataire a deja ete
+    # appliquee : tout le schema est en place et il n'y a PLUS RIEN a creer ici.
+    # On sort immediatement. C'est essentiel : le role applicatif n'a
+    # volontairement pas le droit de creer ou modifier des tables, donc toute
+    # instruction DDL ci-dessous echouerait avec "permission denied for schema
+    # public". Ce bloc n'est conserve que pour une premiere installation faite
+    # avec un role administrateur.
     try:
         c_auth.execute("SELECT 1 FROM organisations LIMIT 1")
+        return {"erreur": None}
     except Exception:
+        pass
+
+    # --- Installation initiale uniquement (base encore vierge) ---
+    try:
+        c_auth.execute("SELECT 1 FROM utilisateurs LIMIT 1")
+        # La table existe mais pas organisations : migration non appliquee.
         return {"erreur": "MIGRATION_ABSENTE"}
+    except Exception:
+        pass
+
     c_auth.execute("""CREATE TABLE IF NOT EXISTS utilisateurs (
                         id SERIAL PRIMARY KEY,
                         email TEXT UNIQUE,
