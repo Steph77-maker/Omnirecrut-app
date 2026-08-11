@@ -141,6 +141,74 @@ st.markdown(
     unsafe_allow_html=True,
 )
 # ==============================================================================
+# --- CHIFFREMENT DES MOTS DE PASSE DE MESSAGERIE ---
+# Contrairement aux mots de passe de connexion (hachés en bcrypt, jamais
+# relisibles), le mot de passe d'application e-mail doit pouvoir être RELU par
+# l'application pour se connecter en IMAP/SMTP. Il ne peut donc pas être haché,
+# seulement chiffré.
+# La clé vit dans les secrets Streamlit, jamais dans la base : une copie de la
+# base, une sauvegarde égarée ou un accès en lecture ne suffisent plus à
+# récupérer les boîtes mail des clients.
+# ==============================================================================
+try:
+    from cryptography.fernet import Fernet
+    CHIFFREMENT_DISPO = True
+except ModuleNotFoundError:
+    CHIFFREMENT_DISPO = False
+
+_PREFIXE_CHIFFRE = "enc:v1:"
+
+
+@st.cache_resource(show_spinner=False)
+def _get_fernet():
+    """Instancie l'outil de chiffrement à partir de la clé des secrets.
+    Renvoie None si la bibliothèque ou la clé manque : dans ce cas
+    l'enregistrement d'un mot de passe e-mail est REFUSÉ plutôt que stocké
+    en clair."""
+    if not CHIFFREMENT_DISPO:
+        return None
+    cle = st.secrets.get("MAIL_ENCRYPTION_KEY", "")
+    if not cle:
+        return None
+    try:
+        return Fernet(cle.encode() if isinstance(cle, str) else cle)
+    except Exception:
+        return None
+
+
+def chiffrer_secret(valeur: str) -> str:
+    """Chiffre une valeur avant écriture en base. Renvoie None si impossible."""
+    if not valeur:
+        return ""
+    f = _get_fernet()
+    if f is None:
+        return None
+    try:
+        return _PREFIXE_CHIFFRE + f.encrypt(valeur.encode("utf-8")).decode("utf-8")
+    except Exception:
+        return None
+
+
+def dechiffrer_secret(valeur: str) -> str:
+    """Déchiffre une valeur lue en base.
+    Une valeur sans préfixe est un ancien enregistrement en clair : elle est
+    renvoyée telle quelle pour ne casser aucun compte existant, et sera
+    chiffrée automatiquement au prochain enregistrement."""
+    if not valeur:
+        return ""
+    texte = str(valeur)
+    if not texte.startswith(_PREFIXE_CHIFFRE):
+        return texte  # ancien format en clair, transition en douceur
+    f = _get_fernet()
+    if f is None:
+        return ""
+    try:
+        return f.decrypt(texte[len(_PREFIXE_CHIFFRE):].encode("utf-8")).decode("utf-8")
+    except Exception:
+        return ""
+
+
+# ==============================================================================
 # --- SÉCURITÉ & QUOTAS IA ---
 # ==============================================================================
 LIMITE_REQUETES_IA = 300  # Quota mensuel par défaut pour l'offre gratuite
@@ -432,7 +500,7 @@ def _bootstrap_schema_auth():
                 "2099-12-31",
                 1,
                 st.secrets.get("EMAIL_USER", ""),
-                st.secrets.get("EMAIL_PASSWORD", ""),
+                chiffrer_secret(st.secrets.get("EMAIL_PASSWORD", "")) or "",
                 st.secrets.get("EMAIL_IMAP", "imap.gmail.com"),
                 0,
                 999999,
@@ -590,7 +658,7 @@ def check_password():
 
                                     st.session_state["user_config_email"] = {
                                         "email": m_perso if m_perso else email_saisi,
-                                        "password": m_pass,
+                                        "password": dechiffrer_secret(m_pass),
                                         "imap": m_imap if m_imap else "imap.gmail.com",
                                     }
                                     st.rerun()
@@ -1597,30 +1665,42 @@ with st.sidebar.form("form_cfg_mail"):
   btn_save_mail = st.form_submit_button("Enregistrer ma boîte mail")
 
   if btn_save_mail:
-    try:
-      conn_u = get_connection()
-      c_u = conn_u.cursor()
-      c_u.execute(
-          """UPDATE utilisateurs 
-                         SET mail_perso = %s, mail_password = %s, mail_imap = %s 
-                         WHERE email = %s""",
-          (
-              email_utilisateur,
-              password_email,
-              serveur_imap,
-              st.session_state["user_email"],
-          ),
+    # Le mot de passe est chiffré AVANT d'atteindre la base. Si le chiffrement
+    # est indisponible (clé absente ou bibliothèque manquante), on refuse
+    # l'enregistrement : mieux vaut une fonctionnalité bloquée qu'un mot de
+    # passe de messagerie stocké en clair.
+    valeur_chiffree = chiffrer_secret(password_email)
+    if password_email and valeur_chiffree is None:
+      st.error(
+          "🔒 Chiffrement indisponible : le mot de passe e-mail n'a pas été "
+          "enregistré. Vérifiez que MAIL_ENCRYPTION_KEY figure dans les secrets "
+          "et que le paquet cryptography est installé."
       )
-      conn_u.commit()
+    else:
+      try:
+        conn_u = get_connection()
+        c_u = conn_u.cursor()
+        c_u.execute(
+            """UPDATE utilisateurs
+                           SET mail_perso = %s, mail_password = %s, mail_imap = %s
+                           WHERE email = %s""",
+            (
+                email_utilisateur,
+                valeur_chiffree,
+                serveur_imap,
+                st.session_state["user_email"],
+            ),
+        )
+        conn_u.commit()
 
-      st.session_state["user_config_email"] = {
-          "email": email_utilisateur,
-          "password": password_email,
-          "imap": serveur_imap,
-      }
-      st.success("✅ Configuration e-mail sauvegardée !")
-    except Exception as e_m:
-      st.error(f"Erreur de sauvegarde : {e_m}")
+        st.session_state["user_config_email"] = {
+            "email": email_utilisateur,
+            "password": password_email,
+            "imap": serveur_imap,
+        }
+        st.success("✅ Configuration e-mail sauvegardée (mot de passe chiffré).")
+      except Exception as e_m:
+        st.error(f"Erreur de sauvegarde : {e_m}")
 
 # Raccourcis globaux pour le reste de l'application
 email_utilisateur = st.session_state["user_config_email"].get(
