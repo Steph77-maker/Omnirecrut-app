@@ -2446,6 +2446,8 @@ elif st.session_state['page_active'] == "🎯 MATCHING IA OFFRES & CV":
         st.session_state['derniers_matchs'] = []
     if '_matching_fichiers_ids' not in st.session_state:
         st.session_state['_matching_fichiers_ids'] = []
+    if 'resultats_vivier_matching' not in st.session_state:
+        st.session_state['resultats_vivier_matching'] = []
 
     valeur_par_defaut_offre = st.session_state['offre_transferee'] if st.session_state['offre_transferee'] else ""
     if st.session_state['offre_transferee']:
@@ -2618,7 +2620,103 @@ CV :
             st.success("Analyse terminée !")
 
     # -----------------------------------------------------------------------
-    # AFFICHAGE DES RÉSULTATS
+    # RECHERCHE DANS LE VIVIER EXISTANT
+    # Permet de chercher si des candidats déjà en base correspondent à l'offre,
+    # en parallèle ou à la place des CV uploadés.
+    # -----------------------------------------------------------------------
+    st.markdown("---")
+    st.subheader("🗃️ Rechercher dans le vivier existant")
+    st.caption("L'IA compare l'offre saisie ci-dessus aux candidats déjà présents dans votre vivier et identifie les meilleurs profils.")
+
+    if st.button("🔍 CHERCHER DANS LE VIVIER", key="btn_chercher_vivier"):
+        if not texte_offre:
+            st.error("⚠️ Saisissez d'abord une offre ou description de poste dans le champ ci-dessus.")
+        elif not peut_utiliser_ia(st.session_state.get("user_email")):
+            st.error("⚠️ Quota IA atteint.")
+        else:
+            try:
+                c.execute(
+                    "SELECT id, nom, poste, competences, avis_ia, secteur_metier FROM candidats ORDER BY id DESC"
+                )
+                candidats_vivier = c.fetchall()
+                if not candidats_vivier:
+                    st.info("Le vivier est vide pour le moment.")
+                else:
+                    candidats_data = [
+                        {
+                            "id": row[0],
+                            "nom": row[1],
+                            "poste": row[2],
+                            "competences": (row[3] or "")[:400],  # limité pour ne pas exploser le contexte
+                            "secteur": row[5] or "",
+                        }
+                        for row in candidats_vivier
+                    ]
+                    with st.spinner(f"L'IA analyse {len(candidats_data)} candidat(s) du vivier..."):
+                        model_vivier = genai.GenerativeModel("gemini-2.5-flash")
+                        prompt_vivier = f"""Tu es un expert recruteur. Compare cette offre d'emploi aux candidats du vivier ci-dessous.
+
+OFFRE :
+{texte_offre}
+
+CANDIDATS DU VIVIER (id, nom, poste, compétences résumées) :
+{json.dumps(candidats_data, ensure_ascii=False)}
+
+Pour chaque candidat, évalue son adéquation avec l'offre.
+Renvoie STRICTEMENT un tableau JSON (aucun texte autour, aucun markdown), un objet par candidat, avec ces clés :
+- "id" : l'id du candidat (reprends-le tel quel)
+- "nom" : le nom du candidat
+- "score" : entier 0-100 représentant l'adéquation globale avec l'offre
+- "raison" : une phrase courte et factuelle expliquant le score (points forts et points faibles)
+
+N'inclus dans le résultat QUE les candidats avec un score >= 40. Trie par score décroissant."""
+                        resp_vivier = model_vivier.generate_content(prompt_vivier)
+                        resultats_vivier = _extraire_json_liste(resp_vivier.text)
+
+                    incrémenter_quota_ia(st.session_state.get("user_email"))
+
+                    # Enrichissement avec les données complètes depuis le fetch initial
+                    vivier_par_id = {row[0]: row for row in candidats_vivier}
+                    st.session_state["resultats_vivier_matching"] = [
+                        {**r, "poste": vivier_par_id.get(r.get("id"), (None,) * 6)[2] or "",
+                               "competences": vivier_par_id.get(r.get("id"), (None,) * 6)[3] or "",
+                               "secteur": vivier_par_id.get(r.get("id"), (None,) * 6)[5] or ""}
+                        for r in resultats_vivier if isinstance(r, dict) and r.get("id")
+                    ]
+                    if not st.session_state["resultats_vivier_matching"]:
+                        st.info("Aucun candidat du vivier n'atteint un score d'adéquation suffisant (≥ 40 %) avec cette offre.")
+                    else:
+                        st.success(f"✅ {len(st.session_state['resultats_vivier_matching'])} candidat(s) du vivier correspondent à cette offre.")
+
+            except Exception as e:
+                st.error(f"Erreur lors de la recherche dans le vivier : {e}")
+
+    # Affichage des résultats vivier
+    if st.session_state.get("resultats_vivier_matching"):
+        st.markdown("#### 🏆 Candidats du vivier correspondant à l'offre")
+        for res in st.session_state["resultats_vivier_matching"]:
+            score_v = int(res.get("score", 0) or 0)
+            couleur_v = "#2e7d32" if score_v >= 70 else ("#f59e0b" if score_v >= 40 else "#c53030")
+            st.markdown(f"""
+                <div style="background-color:#2d3748; border-radius:10px; padding:16px; margin-bottom:10px; border-left:5px solid {couleur_v};">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-size:17px; font-weight:700; color:#ffffff;">🧑‍💼 {res.get('nom','Inconnu')}</span>
+                        <span style="background-color:{couleur_v}; color:white; padding:4px 14px; border-radius:20px; font-weight:700; font-size:16px;">{score_v}%</span>
+                    </div>
+                    <div style="color:#a3b1cc; font-size:13px; margin-top:4px;">
+                        {res.get('poste','') or '—'} · Secteur : {res.get('secteur','') or '—'}
+                    </div>
+                    <div style="color:#e2e8f0; font-size:13px; margin-top:8px;">
+                        💬 {res.get('raison','') or '—'}
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
+        if st.button("🗑️ Effacer les résultats vivier", key="btn_clear_vivier"):
+            st.session_state["resultats_vivier_matching"] = []
+            st.rerun()
+
+    # -----------------------------------------------------------------------
+    # AFFICHAGE DES RÉSULTATS CV UPLOADÉS
     # -----------------------------------------------------------------------
     if st.session_state['derniers_matchs']:
         st.markdown("---")
@@ -2694,19 +2792,23 @@ CV :
                                 st.markdown(f"**{cat_label}**")
                                 badges_html = ""
                                 for comp in items_cat:
-                                    label = comp.get("label", "")
+                                    label = comp.get("label", "").replace("<", "&lt;").replace(">", "&gt;")
                                     source = comp.get("source", "")
-                                    title_attr = f' title="{source}"' if source else ""
+                                    # Échappement des guillemets dans l'attribut title pour éviter
+                                    # de casser le HTML (source peut contenir des " ex: "Société XYZ")
+                                    source_title = source.replace('"', "&quot;").replace("'", "&#39;").replace("<", "&lt;").replace(">", "&gt;")
+                                    source_display = source.replace("<", "&lt;").replace(">", "&gt;")
+                                    title_attr = f' title="{source_title}"' if source_title else ""
                                     badges_html += (
                                         f'<span{title_attr} style="background-color:{bg_color}; color:{text_color}; '
                                         f'border: 1px solid {text_color}; padding:4px 11px; border-radius:14px; '
                                         f'margin-right:6px; margin-bottom:6px; font-size:12px; display:inline-block;">'
                                         f'{label}</span>'
                                     )
-                                    if source:
+                                    if source_display:
                                         badges_html += (
                                             f'<span style="color:#94a3b8; font-size:11px; font-style:italic; '
-                                            f'margin-right:10px;">↳ {source}</span>'
+                                            f'margin-right:10px;">↳ {source_display}</span>'
                                         )
                                 st.markdown(badges_html + "<br>", unsafe_allow_html=True)
                     else:
