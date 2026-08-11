@@ -297,6 +297,85 @@ def mdp_est_hashe(valeur_stockee):
     return bool(valeur_stockee) and valeur_stockee.startswith(("$2b$", "$2a$", "$2y$"))
 
 
+# ==============================================================================
+# --- BOOTSTRAP DU SCHÉMA D'AUTHENTIFICATION ---
+# ⚠️ CAUSE PRINCIPALE DE LA LENTEUR DE NAVIGATION (corrigée ici) :
+# ce bloc était exécuté à l'intérieur de check_password(), donc à CHAQUE rerun
+# Streamlit = à chaque clic d'onglet. Il déclenchait 8 allers-retours réseau
+# vers Supabase (1 CREATE TABLE + 6 ALTER TABLE qui échouent car les colonnes
+# existent déjà + 1 SELECT COUNT) AVANT que la page ne commence à s'afficher.
+# Via le pooler Supabase, cela représentait ~0,6 à 1,2 s de latence par clic.
+# @st.cache_resource garantit une exécution UNIQUE par processus serveur.
+# ==============================================================================
+@st.cache_resource(show_spinner=False)
+def _bootstrap_schema_auth():
+    """Crée la table utilisateurs + colonnes manquantes + compte admin par défaut.
+    Exécuté une seule fois par processus, jamais à chaque rerun."""
+    conn_auth = get_connection()
+    c_auth = conn_auth.cursor()
+    c_auth.execute("""CREATE TABLE IF NOT EXISTS utilisateurs (
+                        id SERIAL PRIMARY KEY,
+                        email TEXT UNIQUE,
+                        password TEXT,
+                        date_fin_essai TEXT,
+                        est_admin INTEGER DEFAULT 0,
+                        mail_perso TEXT DEFAULT '',
+                        mail_password TEXT DEFAULT '',
+                        mail_imap TEXT DEFAULT 'imap.gmail.com',
+                        nb_requetes_ia INTEGER DEFAULT 0,
+                        quota_max INTEGER DEFAULT 300,
+                        statut_abonnement TEXT DEFAULT 'GRATUIT'
+                    )""")
+
+    # Un seul aller-retour pour connaître les colonnes existantes, au lieu de
+    # 6 ALTER TABLE "à l'aveugle" dont chacun coûtait un aller-retour réseau.
+    c_auth.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = 'utilisateurs'"
+    )
+    colonnes_presentes = {r[0] for r in c_auth.fetchall()}
+
+    colonnes_attendues = {
+        "mail_perso": "TEXT DEFAULT ''",
+        "mail_password": "TEXT DEFAULT ''",
+        "mail_imap": "TEXT DEFAULT 'imap.gmail.com'",
+        "nb_requetes_ia": "INTEGER DEFAULT 0",
+        "quota_max": "INTEGER DEFAULT 300",
+        "statut_abonnement": "TEXT DEFAULT 'GRATUIT'",
+    }
+    for col, dtype in colonnes_attendues.items():
+        if col not in colonnes_presentes:
+            try:
+                c_auth.execute(f"ALTER TABLE utilisateurs ADD COLUMN {col} {dtype}")
+            except Exception:
+                pass
+
+    # Création de l'accès Admin par défaut si la table est vide
+    c_auth.execute("SELECT COUNT(*) FROM utilisateurs")
+    if c_auth.fetchone()[0] == 0:
+        mdp_admin_clair = st.secrets.get("APP_PASSWORD")
+        if not mdp_admin_clair:
+            return {"erreur": "APP_PASSWORD manquant"}
+        c_auth.execute(
+            """INSERT INTO utilisateurs (email, password, date_fin_essai, est_admin, mail_perso,
+                                         mail_password, mail_imap, nb_requetes_ia, quota_max, statut_abonnement)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (
+                "admin@omnirecrut.fr",
+                hacher_mdp(mdp_admin_clair),
+                "2099-12-31",
+                1,
+                st.secrets.get("EMAIL_USER", ""),
+                st.secrets.get("EMAIL_PASSWORD", ""),
+                st.secrets.get("EMAIL_IMAP", "imap.gmail.com"),
+                0,
+                999999,
+                "PRO",
+            ),
+        )
+        conn_auth.commit()
+    return {"erreur": None}
+
+
 # --- SYSTEME D'AUTHENTIFICATION ET GESTION DES ACCÈS & MESSAGERIE UTILISATEUR ---
 def check_password():
     if "password_correct" not in st.session_state:
@@ -310,70 +389,20 @@ def check_password():
     if "user_config_email" not in st.session_state:
         st.session_state["user_config_email"] = {}
 
+    # ⚡ Chemin rapide : si l'utilisateur est déjà connecté, on ne touche PAS
+    # à la base de données. Aucun aller-retour réseau lors d'un changement d'onglet.
+    if st.session_state["password_correct"]:
+        return True
+
     try:
-        conn_auth = get_connection()
-        c_auth = conn_auth.cursor()
-        c_auth.execute("""CREATE TABLE IF NOT EXISTS utilisateurs (
-                            id SERIAL PRIMARY KEY,
-                            email TEXT UNIQUE,
-                            password TEXT,
-                            date_fin_essai TEXT,
-                            est_admin INTEGER DEFAULT 0,
-                            mail_perso TEXT DEFAULT '',
-                            mail_password TEXT DEFAULT '',
-                            mail_imap TEXT DEFAULT 'imap.gmail.com',
-                            nb_requetes_ia INTEGER DEFAULT 0,
-                            quota_max INTEGER DEFAULT 300,
-                            statut_abonnement TEXT DEFAULT 'GRATUIT'
-                        )""")
-
-        # Mises à jour progressives de la table
-        for col, dtype in [
-            ("mail_perso", "TEXT DEFAULT ''"),
-            ("mail_password", "TEXT DEFAULT ''"),
-            ("mail_imap", "TEXT DEFAULT 'imap.gmail.com'"),
-            ("nb_requetes_ia", "INTEGER DEFAULT 0"),
-            ("quota_max", "INTEGER DEFAULT 300"),
-            ("statut_abonnement", "TEXT DEFAULT 'GRATUIT'")
-        ]:
-            try:
-                c_auth.execute(f"ALTER TABLE utilisateurs ADD COLUMN {col} {dtype}")
-            except Exception:
-                pass
-
-        # Création de l'accès Admin par défaut si la table est vide
-        c_auth.execute("SELECT COUNT(*) FROM utilisateurs")
-        if c_auth.fetchone()[0] == 0:
-            mdp_admin_clair = st.secrets.get("APP_PASSWORD")
-            if not mdp_admin_clair:
-                st.error(
-                    "⚠️ Aucun mot de passe admin défini. Ajoutez APP_PASSWORD dans les "
-                    "secrets de l'application (Streamlit Cloud > Settings > Secrets) avant "
-                    "de continuer."
-                )
-                st.stop()
-
-            mdp_admin_hash = hacher_mdp(mdp_admin_clair)
-            default_mail = st.secrets.get("EMAIL_USER", "")
-            default_pwd = st.secrets.get("EMAIL_PASSWORD", "")
-            default_imap = st.secrets.get("EMAIL_IMAP", "imap.gmail.com")
-            c_auth.execute(
-                """INSERT INTO utilisateurs (email, password, date_fin_essai, est_admin, mail_perso, mail_password, mail_imap, nb_requetes_ia, quota_max, statut_abonnement) 
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                (
-                    "admin@omnirecrut.fr",
-                    mdp_admin_hash,
-                    "2099-12-31",
-                    1,
-                    default_mail,
-                    default_pwd,
-                    default_imap,
-                    0,
-                    999999,
-                    "PRO"
-                ),
+        res_bootstrap = _bootstrap_schema_auth()
+        if res_bootstrap.get("erreur"):
+            st.error(
+                "⚠️ Aucun mot de passe admin défini. Ajoutez APP_PASSWORD dans les "
+                "secrets de l'application (Streamlit Cloud > Settings > Secrets) avant "
+                "de continuer."
             )
-            conn_auth.commit()
+            st.stop()
     except Exception as e:
         st.error(f"Erreur d'initialisation du système d'authentification : {e}")
 
@@ -632,7 +661,14 @@ def _proto_to_python(value):
 # Schéma volontairement APLATI (pas de liste d'objets, pas d'objet imbriqué) :
 # gemini-2.5-flash est beaucoup moins fiable que pro sur les schémas de tools
 # fortement imbriqués, ce qui déclenche des finish_reason MALFORMED_FUNCTION_CALL.
-_tool_save_candidate = genai.protos.Tool(
+#
+# ⚠️ PERFORMANCE : ce schéma protobuf était construit au niveau module, donc
+# reconstruit intégralement à CHAQUE rerun Streamlit (chaque clic d'onglet) —
+# c'est ce qui donnait l'impression que "Gemini tourne à chaque chargement".
+# @st.cache_resource le construit une seule fois par processus.
+@st.cache_resource(show_spinner=False)
+def _get_tool_save_candidate():
+    return genai.protos.Tool(
     function_declarations=[
         genai.protos.FunctionDeclaration(
             name="save_candidate_to_sqlite",
@@ -704,7 +740,6 @@ _tool_save_candidate = genai.protos.Tool(
         )
     ]
 )
-
 _SYSTEM_PROMPT_AGENT = """
 Tu es un agent IA expert en analyse de profils professionnels pour un cabinet de recrutement.
 Ta mission : analyser un CV brut, SANS offre d'emploi de référence, pour enrichir un vivier de candidats.
@@ -753,12 +788,17 @@ professionnel, sans jugement de valeur sur le parcours du candidat. Les indices 
 des pistes de lecture, pas un verdict — ne jamais les présenter comme un résultat de test validé.
 """
 
-_agent_model = genai.GenerativeModel(
-    model_name="gemini-2.5-flash",
-    system_instruction=_SYSTEM_PROMPT_AGENT,
-    tools=[_tool_save_candidate],
-    generation_config={"temperature": 0.3},
-)
+# ⚠️ PERFORMANCE : ce modèle était instancié au niveau module, donc reconstruit
+# à CHAQUE rerun Streamlit. Désormais construit une seule fois par processus,
+# et seulement au premier usage réel de l'agent d'analyse de CV.
+@st.cache_resource(show_spinner=False)
+def _get_agent_model():
+    return genai.GenerativeModel(
+        model_name="gemini-2.5-flash",
+        system_instruction=_SYSTEM_PROMPT_AGENT,
+        tools=[_get_tool_save_candidate()],
+        generation_config={"temperature": 0.3},
+    )
 
 
 def analyser_cv_avec_agent(texte_cv: str, secteur_metier: str, max_tentatives: int = 3) -> dict:
@@ -768,7 +808,7 @@ def analyser_cv_avec_agent(texte_cv: str, secteur_metier: str, max_tentatives: i
     sur des schémas de tools complexes)."""
     for tentative in range(1, max_tentatives + 1):
         try:
-            chat = _agent_model.start_chat(enable_automatic_function_calling=False)
+            chat = _get_agent_model().start_chat(enable_automatic_function_calling=False)
             response = chat.send_message(
                 f"Voici un CV brut à analyser et à enregistrer dans le vivier :\n\n{texte_cv}"
             )
@@ -977,6 +1017,48 @@ Renvoie STRICTEMENT un tableau JSON, un objet par candidat, avec les clés :
 #   Chacune de ces actions engageantes reste déclenchée par un clic humain
 #   explicite, après relecture du brouillon ou de la suggestion à l'écran.
 # ==============================================================================
+
+# ==============================================================================
+# --- FONCTIONS DE CHARGEMENT MISES EN CACHE (NIVEAU MODULE) ---
+# Elles étaient définies à l'intérieur des blocs de page, donc redéclarées et
+# redécorées à chaque rerun : Streamlit pouvait alors manquer le cache et
+# relancer la requête Supabase à chaque clic. Définies au niveau module, le
+# cache est un objet unique et stable pour toute la durée du processus.
+# ==============================================================================
+@st.cache_data(ttl=30, show_spinner=False)
+def _charger_prospects_quotas(_conn):
+    _c = _conn.cursor()
+    _c.execute("SELECT email, COALESCE(nb_requetes_ia, 0) FROM utilisateurs WHERE est_admin = 0")
+    return _c.fetchall()
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _charger_prospects_liste(_conn):
+    _c = _conn.cursor()
+    _c.execute("SELECT email FROM utilisateurs WHERE est_admin = 0")
+    return [row[0] for row in _c.fetchall()]
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def _stats_vivier(_conn):
+    _c = _conn.cursor()
+    _c.execute("""SELECT COUNT(*),
+        SUM(CASE WHEN statut LIKE '%Disponible%' THEN 1 ELSE 0 END),
+        SUM(CASE WHEN statut LIKE '%mission%' THEN 1 ELSE 0 END)
+        FROM candidats""")
+    return _c.fetchone()
+
+
+@st.cache_data(ttl=10, show_spinner=False)
+def _charger_pipeline(_conn):
+    _c = _conn.cursor()
+    try:
+        _c.execute("SELECT id, nom, poste, statut, categorie_ia, score_matching FROM candidats")
+        return _c.fetchall()
+    except Exception:
+        _c.execute("SELECT id, nom, poste, statut FROM candidats")
+        return [(r[0], r[1], r[2], r[3], "Profil Confirme", "100%") for r in _c.fetchall()]
+
 
 @st.cache_data(ttl=15, show_spinner=False)
 def _charger_vivier_candidats(_conn, colonne_poste):
@@ -1452,14 +1534,6 @@ if st.session_state.get("is_admin", False):
     # --- 2. SOUS-MENU : SUIVI & RÉINITIALISATION DES QUOTAS IA ---
     with st.sidebar.expander("📊 Quotas IA & Remise à 0"):
         try:
-            # Mise en cache 30s : évite un aller-retour Supabase à chaque rerun
-            # quand l'expander est ouvert mais qu'aucune action n'a été effectuée.
-            @st.cache_data(ttl=30, show_spinner=False)
-            def _charger_prospects_quotas(_conn):
-                _c = _conn.cursor()
-                _c.execute("SELECT email, COALESCE(nb_requetes_ia, 0) FROM utilisateurs WHERE est_admin = 0")
-                return _c.fetchall()
-
             prospects_data = _charger_prospects_quotas(conn)
 
             if prospects_data:
@@ -1486,12 +1560,6 @@ if st.session_state.get("is_admin", False):
     # --- 3. SOUS-MENU : SUPPRESSION D'UN PROSPECT ---
     with st.sidebar.expander("🗑️ Supprimer un Prospect"):
         try:
-            @st.cache_data(ttl=30, show_spinner=False)
-            def _charger_prospects_liste(_conn):
-                _c = _conn.cursor()
-                _c.execute("SELECT email FROM utilisateurs WHERE est_admin = 0")
-                return [row[0] for row in _c.fetchall()]
-
             prospects_suppr = _charger_prospects_liste(conn)
 
             if prospects_suppr:
@@ -1615,15 +1683,6 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
             st.session_state["_vivier_nom_col_poste"] = "poste"
 
     nom_colonne_poste = st.session_state.get("_vivier_nom_col_poste", "poste")
-
-    @st.cache_data(ttl=15, show_spinner=False)
-    def _stats_vivier(_conn):
-        _c = _conn.cursor()
-        _c.execute("""SELECT COUNT(*),
-            SUM(CASE WHEN statut LIKE '%Disponible%' THEN 1 ELSE 0 END),
-            SUM(CASE WHEN statut LIKE '%mission%' THEN 1 ELSE 0 END)
-            FROM candidats""")
-        return _c.fetchone()
 
     try:
         stats = _stats_vivier(conn)
@@ -2842,16 +2901,6 @@ elif st.session_state['page_active'] == "📊 PIPELINE DE RECRUTEMENT":
 
     # 1. Extraction des profils du vivier (mise en cache 10s pour éviter un
     #    aller-retour Supabase à chaque rerun pendant qu'on interagit sur la page)
-    @st.cache_data(ttl=10, show_spinner=False)
-    def _charger_pipeline(_conn):
-        _c = _conn.cursor()
-        try:
-            _c.execute("SELECT id, nom, poste, statut, categorie_ia, score_matching FROM candidats")
-            return _c.fetchall()
-        except Exception:
-            _c.execute("SELECT id, nom, poste, statut FROM candidats")
-            return [(r[0], r[1], r[2], r[3], "Profil Confirmé", "100%") for r in _c.fetchall()]
-
     try:
         candidats_pipeline = _charger_pipeline(conn)
     except Exception as err:
