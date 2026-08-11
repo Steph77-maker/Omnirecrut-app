@@ -145,50 +145,68 @@ st.markdown(
 # ==============================================================================
 LIMITE_REQUETES_IA = 300  # Quota mensuel par défaut pour l'offre gratuite
 
-def peut_utiliser_ia(email_utilisateur):
-    """Vérifie si l'utilisateur n'a pas dépassé sa limite mensuelle."""
+def peut_utiliser_ia(email_utilisateur=None):
+    """Verifie que l'ORGANISATION courante n'a pas depasse sa limite mensuelle.
+    Le quota est porte par l'organisation et non par l'utilisateur : une agence
+    a plusieurs comptes partagera donc un quota unique."""
     if st.session_state.get("is_admin") or st.session_state.get("user_statut") == "PRO":
         return True
-    
+
+    org_id = st.session_state.get("organisation_id")
+    if not org_id:
+        return False
+
     try:
         conn_q = get_connection()
         c_q = conn_q.cursor()
-        c_q.execute("SELECT nb_requetes_ia, quota_max, statut_abonnement FROM utilisateurs WHERE email = %s", (email_utilisateur,))
+        c_q.execute(
+            "SELECT nb_requetes_ia, quota_max, statut_abonnement FROM organisations WHERE id = %s",
+            (org_id,),
+        )
         res = c_q.fetchone()
-        
+
         if res:
             nb_actuel = res[0] if res[0] is not None else 0
             q_max = res[1] if res[1] is not None else LIMITE_REQUETES_IA
-            statut = res[2] if res[2] is not None else "GRATUIT"
-            
+            statut = res[2] if res[2] is not None else "ESSAI"
+
             if statut == "PRO":
                 return True
             return nb_actuel < q_max
-        return True
+        return False
     except Exception:
         return True
 
-def incrémenter_quota_ia(email_utilisateur):
-    """Incrémente le compteur de requêtes IA de l'utilisateur."""
-    if not st.session_state.get("is_admin") and email_utilisateur:
+def incrémenter_quota_ia(email_utilisateur=None):
+    """Incremente le compteur de requetes IA de l'ORGANISATION courante.
+    Doit ecrire dans la meme table que celle lue par l'affichage (organisations),
+    sinon le compteur reste bloque a zero a l'ecran."""
+    org_id = st.session_state.get("organisation_id")
+    if not st.session_state.get("is_admin") and org_id:
         try:
             conn_q = get_connection()
             c_q = conn_q.cursor()
-            c_q.execute("UPDATE utilisateurs SET nb_requetes_ia = COALESCE(nb_requetes_ia, 0) + 1 WHERE email = %s", (email_utilisateur,))
+            c_q.execute(
+                "UPDATE organisations SET nb_requetes_ia = COALESCE(nb_requetes_ia, 0) + 1 WHERE id = %s",
+                (org_id,),
+            )
             conn_q.commit()
-            try:
-                _charger_quota_utilisateur.clear()
-            except NameError:
-                pass  # fonction pas encore définie au premier import, sans impact
+            for _cache in ("_charger_quota_utilisateur", "_charger_organisations_admin"):
+                try:
+                    globals()[_cache].clear()
+                except Exception:
+                    pass
         except Exception:
             pass
 
-def reinitialiser_quota_ia(email_utilisateur):
-    """Remet le compteur de requêtes IA d'un utilisateur à 0."""
+def reinitialiser_quota_ia(id_organisation):
+    """Remet a 0 le compteur de requetes IA d'une organisation.
+    Recoit un IDENTIFIANT d'organisation (et non un e-mail) : c'est ce que lui
+    transmet le bouton de l'onglet Abonnements."""
     try:
         conn_q = get_connection()
         c_q = conn_q.cursor()
-        c_q.execute("UPDATE utilisateurs SET nb_requetes_ia = 0 WHERE email = %s", (email_utilisateur,))
+        c_q.execute("UPDATE organisations SET nb_requetes_ia = 0 WHERE id = %s", (id_organisation,))
         conn_q.commit()
         try:
             _charger_quota_utilisateur.clear()
@@ -1698,29 +1716,13 @@ if st.session_state.get("is_admin", False):
                     except Exception as e_pwd:
                         st.error(f"Erreur lors de la mise à jour : {e_pwd}")
 
-    # --- 2. SOUS-MENU : SUIVI & RÉINITIALISATION DES QUOTAS IA ---
-    with st.sidebar.expander("📊 Quotas IA & Remise à 0"):
-        try:
-            prospects_data = _charger_prospects_quotas(conn)
-
-            if prospects_data:
-                for email_p, nb_p in prospects_data:
-                    st.caption(f"👤 **{email_p}** : {nb_p} / {LIMITE_REQUETES_IA} requêtes")
-                st.markdown("---")
-                liste_emails = [p[0] for p in prospects_data]
-                target_user = st.selectbox("Réinitialiser l'utilisateur :", liste_emails, key="sb_reset_quota_sb")
-                if st.button("🔄 Remettre le quota à 0", key="btn_reset_quota_sb"):
-                    conn_res = get_connection()
-                    c_res = conn_res.cursor()
-                    c_res.execute("UPDATE utilisateurs SET nb_requetes_ia = 0 WHERE email = %s", (target_user,))
-                    conn_res.commit()
-                    _charger_prospects_quotas.clear()
-                    st.success(f"Quota réinitialisé pour {target_user} !")
-                    st.rerun()
-            else:
-                st.info("Aucun prospect enregistré.")
-        except Exception as e_quota:
-            st.error(f"Erreur quota : {e_quota}")
+    # --- 2. SUIVI DES QUOTAS IA ---
+    # Ce panneau lisait et remettait a zero le compteur dans la table
+    # utilisateurs, alors que quota et abonnement sont desormais portes par
+    # l'organisation : il affichait donc des chiffres faux et sa remise a zero
+    # etait sans effet. Le suivi complet se trouve maintenant dans l'onglet
+    # "ABONNEMENTS & CLIENTS", avec les compteurs d'usage par compte.
+    st.sidebar.info("📊 Suivi des quotas et abonnements : voir l'onglet **🔐 ABONNEMENTS & CLIENTS** du menu principal.")
 
     st.sidebar.markdown("---")
 
