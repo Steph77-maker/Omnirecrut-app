@@ -39,57 +39,84 @@ import streamlit as st
 def _ouvrir_connexion_pg():
     url = st.secrets["connections"]["supabase"]["url"]
     conn_pg = psycopg2.connect(url, connect_timeout=10)
-    # Autocommit : chaque instruction est validée immédiatement. C'est le choix
-    # le plus proche du comportement SQLite d'origine (isolation_level=None,
-    # càd autocommit) et surtout le plus sûr ici : de nombreux blocs du code
-    # font "try: c.execute(...) except Exception: pass" (ex. migrations de
-    # colonnes ALTER TABLE). En PostgreSQL, sans autocommit, une requête en
-    # échec invalide toute la transaction en cours tant qu'un ROLLBACK n'est
-    # pas exécuté — ce qui casserait les requêtes suivantes sur cette même
-    # connexion. L'autocommit évite ce piège sans toucher à la logique métier.
     conn_pg.autocommit = True
     return conn_pg
 
 
-@st.cache_resource(show_spinner=False)
+# ==============================================================================
+# --- CONNEXION PAR SESSION (ISOLATION MULTI-LOCATAIRE) ---
+# ⚠️ CHANGEMENT STRUCTURANT : la connexion était auparavant mise en cache par
+# @st.cache_resource, donc PARTAGÉE par toutes les sessions du serveur. C'était
+# incompatible avec l'isolation : le contexte d'organisation (SET app.org_id)
+# posé par un utilisateur se serait appliqué aux requêtes des autres.
+# Chaque session dispose désormais de sa propre connexion, stockée dans
+# session_state. Le test de vivacité n'est fait qu'une fois par session pour
+# ne pas réintroduire de latence à chaque changement d'onglet.
+# ==============================================================================
 def get_connection():
-    """Une seule connexion PostgreSQL est ouverte et réutilisée pour toute la
-    durée de vie du processus Streamlit (grâce à st.cache_resource), au lieu
-    d'en recréer une à chaque rerun (= à chaque clic)."""
-    return _ouvrir_connexion_pg()
+    """Connexion PostgreSQL propre à la session utilisateur courante."""
+    conn_pg = st.session_state.get("_pg_conn")
+    if conn_pg is not None:
+        return conn_pg
+    conn_pg = _ouvrir_connexion_pg()
+    st.session_state["_pg_conn"] = conn_pg
+    st.session_state["_org_appliquee"] = None
+    return conn_pg
+
+
+def _reinitialiser_connexion():
+    """Ferme et oublie la connexion de session (utilisée si elle est coupée)."""
+    ancienne = st.session_state.pop("_pg_conn", None)
+    st.session_state["_org_appliquee"] = None
+    if ancienne is not None:
+        try:
+            ancienne.close()
+        except Exception:
+            pass
 
 
 def get_connexion_saine():
-    """Renvoie une connexion vivante en testant sa santé UNE SEULE FOIS par
-    session utilisateur (via session_state). Le SELECT 1 n'est donc émis qu'au
-    premier rerun de la session — pas à chaque changement d'onglet — ce qui
-    supprime l'aller-retour réseau superflu vers Supabase à chaque clic.
-
-    session_state est accessible dès le tout premier appel niveau module dans
-    Streamlit (c'est un singleton global), mais on protège les accès avec
-    try/except pour ne jamais bloquer le démarrage en cas de contexte inattendu."""
+    """Renvoie une connexion vivante. Le SELECT 1 n'est émis qu'une seule fois
+    par session (pas à chaque rerun), puis le contexte d'organisation est posé."""
     conn_pg = get_connection()
-    try:
-        deja_verifie = st.session_state.get("_conn_verifiee", False)
-    except Exception:
-        deja_verifie = False  # premier appel avant init complète de Streamlit
-
-    if not deja_verifie:
+    if not st.session_state.get("_conn_verifiee"):
         try:
             with conn_pg.cursor() as c_test:
                 c_test.execute("SELECT 1")
         except Exception:
-            try:
-                conn_pg.close()
-            except Exception:
-                pass
-            get_connection.clear()
+            _reinitialiser_connexion()
             conn_pg = get_connection()
-        try:
-            st.session_state["_conn_verifiee"] = True
-        except Exception:
-            pass  # si session_state n'est pas encore dispo, on retente au prochain rerun
+        st.session_state["_conn_verifiee"] = True
+    appliquer_contexte_organisation(conn_pg)
     return conn_pg
+
+
+def appliquer_contexte_organisation(conn_pg=None):
+    """Déclare à PostgreSQL l'organisation de la session courante.
+
+    C'est cette valeur que lisent les politiques Row Level Security : tant
+    qu'elle n'est pas posée, la base ne renvoie AUCUNE ligne métier (refus par
+    défaut). Posée une seule fois par session — la connexion étant propre à la
+    session, le réglage persiste sans coût à chaque rerun."""
+    org_id = st.session_state.get("organisation_id")
+    if not org_id:
+        return
+    if st.session_state.get("_org_appliquee") == org_id:
+        return
+    if conn_pg is None:
+        conn_pg = get_connection()
+    try:
+        with conn_pg.cursor() as cur_ctx:
+            # set_config(..., false) = portée session, sur CETTE connexion.
+            cur_ctx.execute("SELECT set_config('app.org_id', %s, false)", (str(org_id),))
+        st.session_state["_org_appliquee"] = org_id
+    except Exception:
+        st.session_state["_org_appliquee"] = None
+
+
+def org_courante() -> int:
+    """Identifiant de l'organisation active — sert aussi de clé de cache."""
+    return int(st.session_state.get("organisation_id") or 0)
 
 # --- CONFIGURATION DU THÈME VISUEL (DOIT ÊTRE AU TOUT DÉBUT) ---
 st.set_page_config(
@@ -313,6 +340,10 @@ def _bootstrap_schema_auth():
     Exécuté une seule fois par processus, jamais à chaque rerun."""
     conn_auth = get_connection()
     c_auth = conn_auth.cursor()
+    try:
+        c_auth.execute("SELECT 1 FROM organisations LIMIT 1")
+    except Exception:
+        return {"erreur": "MIGRATION_ABSENTE"}
     c_auth.execute("""CREATE TABLE IF NOT EXISTS utilisateurs (
                         id SERIAL PRIMARY KEY,
                         email TEXT UNIQUE,
@@ -388,6 +419,8 @@ def check_password():
         st.session_state["user_statut"] = "GRATUIT"
     if "user_config_email" not in st.session_state:
         st.session_state["user_config_email"] = {}
+    if "organisation_id" not in st.session_state:
+        st.session_state["organisation_id"] = None
 
     # ⚡ Chemin rapide : si l'utilisateur est déjà connecté, on ne touche PAS
     # à la base de données. Aucun aller-retour réseau lors d'un changement d'onglet.
@@ -396,6 +429,13 @@ def check_password():
 
     try:
         res_bootstrap = _bootstrap_schema_auth()
+        if res_bootstrap.get("erreur") == "MIGRATION_ABSENTE":
+            st.error(
+                "⚠️ La migration multi-locataire n'a pas encore été appliquée. "
+                "Exécutez migration_multitenant.sql dans Supabase > SQL Editor "
+                "avant de démarrer l'application."
+            )
+            st.stop()
         if res_bootstrap.get("erreur"):
             st.error(
                 "⚠️ Aucun mot de passe admin défini. Ajoutez APP_PASSWORD dans les "
@@ -447,8 +487,12 @@ def check_password():
                         conn_chk = get_connection()
                         c_chk = conn_chk.cursor()
                         c_chk.execute(
-                            "SELECT password, date_fin_essai, est_admin, mail_perso,"
-                            " mail_password, mail_imap, statut_abonnement FROM utilisateurs WHERE email = %s",
+                            "SELECT u.password, u.date_fin_essai, u.est_admin, u.mail_perso,"
+                            " u.mail_password, u.mail_imap, o.statut_abonnement, u.organisation_id,"
+                            " o.nom, o.date_fin_essai"
+                            " FROM utilisateurs u"
+                            " JOIN organisations o ON o.id = u.organisation_id"
+                            " WHERE u.email = %s",
                             (email_saisi,),
                         )
                         res = c_chk.fetchone()
@@ -462,6 +506,9 @@ def check_password():
                                 m_pass,
                                 m_imap,
                                 db_statut,
+                                db_org_id,
+                                db_org_nom,
+                                db_org_fin_essai,
                             ) = res
                             if verifier_mdp(pwd_saisi, db_password):
                                 # Migration silencieuse : si l'ancien mot de passe était
@@ -478,7 +525,11 @@ def check_password():
                                     except Exception:
                                         pass
 
-                                date_exp = datetime.date.fromisoformat(db_date_fin)
+                                source_date = db_org_fin_essai or db_date_fin
+                                if isinstance(source_date, datetime.date):
+                                    date_exp = source_date
+                                else:
+                                    date_exp = datetime.date.fromisoformat(str(source_date))
                                 aujourdhui = datetime.date.today()
 
                                 if db_is_admin == 1 or aujourdhui <= date_exp:
@@ -486,6 +537,20 @@ def check_password():
                                     st.session_state["user_email"] = email_saisi
                                     st.session_state["is_admin"] = True if db_is_admin == 1 else False
                                     st.session_state["user_statut"] = db_statut if db_statut else "GRATUIT"
+                                    # --- Contexte d'isolation : c'est cette valeur que
+                                    # PostgreSQL utilisera pour filtrer TOUTES les lignes.
+                                    st.session_state["organisation_id"] = db_org_id
+                                    st.session_state["organisation_nom"] = db_org_nom
+                                    st.session_state["_org_appliquee"] = None
+                                    appliquer_contexte_organisation()
+                                    try:
+                                        conn_lc = get_connection()
+                                        conn_lc.cursor().execute(
+                                            "UPDATE utilisateurs SET derniere_connexion = now() WHERE email = %s",
+                                            (email_saisi,),
+                                        )
+                                    except Exception:
+                                        pass
 
                                     st.session_state["user_config_email"] = {
                                         "email": m_perso if m_perso else email_saisi,
@@ -531,6 +596,18 @@ except ModuleNotFoundError:
 conn = get_connexion_saine()
 c = conn.cursor()
 
+# --- GARDE-FOU D'ISOLATION -------------------------------------------------
+# Si le contexte d'organisation n'a pas pu etre pose, on refuse d'afficher quoi
+# que ce soit plutot que de risquer une lecture hors perimetre. PostgreSQL
+# renverrait deja zero ligne (refus par defaut), mais mieux vaut un message
+# explicite qu'une application silencieusement vide.
+if st.session_state.get("password_correct") and not st.session_state.get("organisation_id"):
+    st.error(
+        "\u26a0\ufe0f Session incomplete : aucune organisation n'est associee a ce compte. "
+        "Reconnectez-vous. Si le probleme persiste, contactez l'administrateur."
+    )
+    st.stop()
+
 
 # ==============================================================================
 # --- MIGRATIONS DE SCHÉMA : exécutées UNE SEULE FOIS par processus ---
@@ -546,6 +623,16 @@ c = conn.cursor()
 # ==============================================================================
 @st.cache_resource(show_spinner=False)
 def _migrer_schema_candidats(_conn):
+    # Le schéma est géré par migration_multitenant.sql. Le rôle applicatif n'a
+    # plus les droits DDL (c'est voulu) : toute erreur ici est donc normale et
+    # ne doit jamais empêcher l'application de démarrer.
+    try:
+        return _migrer_schema_candidats_impl(_conn)
+    except Exception:
+        return True
+
+
+def _migrer_schema_candidats_impl(_conn):
     c_mig = _conn.cursor()
     c_mig.execute("""CREATE TABLE IF NOT EXISTS candidats 
                  (id SERIAL PRIMARY KEY, nom TEXT, poste TEXT, competences TEXT, 
@@ -862,6 +949,13 @@ SEUIL_ALERTE_MATCHING = 70  # score mini (0-100) pour déclencher une alerte
 
 @st.cache_resource(show_spinner=False)
 def _migrer_schema_clients_et_alertes(_conn):
+    try:
+        return _migrer_schema_clients_et_alertes_impl(_conn)
+    except Exception:
+        return True
+
+
+def _migrer_schema_clients_et_alertes_impl(_conn):
     c_mig = _conn.cursor()
     c_mig.execute("""CREATE TABLE IF NOT EXISTS clients 
                  (id SERIAL PRIMARY KEY, entreprise TEXT, secteur TEXT, contact TEXT, 
@@ -1040,7 +1134,7 @@ def _charger_prospects_liste(_conn):
 
 
 @st.cache_data(ttl=15, show_spinner=False)
-def _stats_vivier(_conn):
+def _stats_vivier(_conn, org_id):
     _c = _conn.cursor()
     _c.execute("""SELECT COUNT(*),
         SUM(CASE WHEN statut LIKE '%Disponible%' THEN 1 ELSE 0 END),
@@ -1050,7 +1144,7 @@ def _stats_vivier(_conn):
 
 
 @st.cache_data(ttl=10, show_spinner=False)
-def _charger_pipeline(_conn):
+def _charger_pipeline(_conn, org_id):
     _c = _conn.cursor()
     try:
         _c.execute("SELECT id, nom, poste, statut, categorie_ia, score_matching FROM candidats")
@@ -1060,8 +1154,39 @@ def _charger_pipeline(_conn):
         return [(r[0], r[1], r[2], r[3], "Profil Confirme", "100%") for r in _c.fetchall()]
 
 
+@st.cache_data(ttl=20, show_spinner=False)
+def _charger_organisations_admin(_conn):
+    """Tableau de bord commercial de l'administrateur.
+
+    IMPORTANT : cette requete ne renvoie QUE des metadonnees de compte et des
+    COMPTEURS agreges. Aucun nom de candidat, aucun CV, aucune fiche client n'en
+    sort. L'administrateur peut ainsi piloter ses abonnements et constater
+    l'usage reel de l'outil, sans jamais acceder aux donnees personnelles
+    confiees par ses clients."""
+    c_o = _conn.cursor()
+    c_o.execute("""
+        SELECT o.id,
+               o.nom,
+               o.email_contact,
+               o.statut_abonnement,
+               o.date_fin_essai,
+               o.nb_requetes_ia,
+               o.quota_max,
+               o.date_creation,
+               COALESCE(s.nb_candidats, 0) AS nb_candidats,
+               COALESCE(s.nb_clients,   0) AS nb_clients,
+               COALESCE(s.nb_contrats,  0) AS nb_contrats,
+               (SELECT MAX(u.derniere_connexion) FROM utilisateurs u WHERE u.organisation_id = o.id) AS derniere_co
+        FROM organisations o
+        LEFT JOIN stats_organisations() s ON s.org_id = o.id
+        WHERE o.est_organisation_admin = FALSE
+        ORDER BY o.date_creation DESC
+    """)
+    return c_o.fetchall()
+
+
 @st.cache_data(ttl=15, show_spinner=False)
-def _charger_vivier_candidats(_conn, colonne_poste):
+def _charger_vivier_candidats(_conn, colonne_poste, org_id):
     """Chargement de la table candidats pour l'onglet Vivier. Défini au niveau
     module (et pas dans le bloc de l'onglet) pour que le cache soit le même
     objet quelle que soit la page qui appelle .clear() après une écriture sur
@@ -1073,7 +1198,7 @@ def _charger_vivier_candidats(_conn, colonne_poste):
 
 
 @st.cache_data(ttl=15, show_spinner=False)
-def _charger_clients(_conn):
+def _charger_clients(_conn, org_id):
     """Chargement de la table clients pour l'onglet Portefeuille Clients.
     Même logique que _charger_vivier_candidats : défini au niveau module pour
     que .clear() invalide bien le même cache quel que soit l'endroit du
@@ -1086,7 +1211,7 @@ def _charger_clients(_conn):
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def generer_digest_quotidien() -> dict:
+def generer_digest_quotidien(org_id) -> dict:
     """Purement déterministe — AUCUN appel IA ici. Agrège des faits déjà en base,
     ne prend et ne suggère aucune décision.
     Mis en cache 60s : ces 4 requêtes n'ont pas besoin d'être rejouées à chaque
@@ -1190,7 +1315,7 @@ query_params = st.query_params
 if query_params.get("payment") == "success":
     user_email = st.session_state.get("user_email")
     if user_email:
-        c.execute("UPDATE utilisateurs SET statut_abonnement = 'PRO', quota_max = 999999 WHERE email = %s", (user_email,))
+        c.execute("UPDATE organisations SET statut_abonnement = 'PRO', quota_max = 999999 WHERE id = %s", (org_courante(),))
         conn.commit()
         try:
             _charger_quota_utilisateur.clear()
@@ -1205,7 +1330,7 @@ if query_params.get("payment") == "success":
 # 3. PANNEAU LATÉRAL (SIDEBAR) : QUOTAS & BOUTON STRIPE
 # ==============================================================================
 @st.cache_data(ttl=20, show_spinner=False)
-def _charger_alertes_sidebar(_conn):
+def _charger_alertes_sidebar(_conn, org_id):
     """Regroupe les 2 requêtes affichées dans la sidebar à CHAQUE rerun (donc à
     chaque clic, quel que soit l'onglet actif) en un seul appel mis en cache
     20s. Sans ce cache, ces requêtes partaient vers Supabase même quand
@@ -1221,16 +1346,19 @@ def _charger_alertes_sidebar(_conn):
 
 
 @st.cache_data(ttl=30, show_spinner=False)
-def _charger_quota_utilisateur(_conn, email):
+def _charger_quota_utilisateur(_conn, org_id):
     c_q = _conn.cursor()
-    c_q.execute("SELECT nb_requetes_ia, quota_max, statut_abonnement FROM utilisateurs WHERE email = %s", (email,))
+    c_q.execute(
+        "SELECT nb_requetes_ia, quota_max, statut_abonnement FROM organisations WHERE id = %s",
+        (org_id,),
+    )
     return c_q.fetchone()
 
 
 with st.sidebar:
     # --- 🔔 ALERTES DE MATCHING (veille proactive) ---
     try:
-        nb_alertes_non_lues, lignes_alertes = _charger_alertes_sidebar(conn)
+        nb_alertes_non_lues, lignes_alertes = _charger_alertes_sidebar(conn, org_courante())
     except Exception:
         nb_alertes_non_lues, lignes_alertes = 0, []
 
@@ -1254,7 +1382,7 @@ with st.sidebar:
     user_email = st.session_state.get("user_email", "")
     
     # Récupération de l'état du quota et du statut (mise en cache 30s)
-    res_u = _charger_quota_utilisateur(conn, user_email)
+    res_u = _charger_quota_utilisateur(conn, org_courante())
     
     quota_utilise = res_u[0] if res_u and res_u[0] is not None else 0
     quota_max = res_u[1] if res_u and res_u[1] is not None else 300
@@ -1293,6 +1421,13 @@ with st.sidebar:
 # --- TABLES RH & ADMINISTRATIVES ---
 @st.cache_resource(show_spinner=False)
 def _migrer_schema_contrats_et_heures(_conn):
+    try:
+        return _migrer_schema_contrats_et_heures_impl(_conn)
+    except Exception:
+        return True
+
+
+def _migrer_schema_contrats_et_heures_impl(_conn):
     c_mig = _conn.cursor()
     c_mig.execute("""CREATE TABLE IF NOT EXISTS contrats (
                     id SERIAL PRIMARY KEY,
@@ -1469,6 +1604,7 @@ if st.session_state.get("is_admin", False):
     # --- 1. SOUS-MENU : CRÉATION DE COMPTE ---
     with st.sidebar.expander("➕ Créer un accès Prospect"):
         with st.form("form_nouveau_prospect"):
+            p_nom_org = st.text_input("Nom de l'agence / société :", placeholder="Ex: Intérim Sud Recrutement")
             p_email = st.text_input("E-mail prospect :").strip().lower()
             p_pwd = st.text_input("Mot de passe temporaire :")
             p_jours = st.number_input(
@@ -1484,12 +1620,25 @@ if st.session_state.get("is_admin", False):
                         ).isoformat()
                         conn_add = get_connection()
                         c_add = conn_add.cursor()
+                        # Chaque prospect reçoit sa PROPRE organisation : espace de
+                        # données totalement étanche, invisible des autres comptes
+                        # (y compris de l'administrateur).
                         c_add.execute(
-                            """INSERT INTO utilisateurs (email, password, date_fin_essai, est_admin, nb_requetes_ia)
-                               VALUES (%s, %s, %s, 0, 0)""",
-                            (p_email, hacher_mdp(p_pwd), date_fin_calc),
+                            """INSERT INTO organisations
+                               (nom, email_contact, statut_abonnement, date_fin_essai, quota_max)
+                               VALUES (%s, %s, 'ESSAI', %s, %s) RETURNING id""",
+                            (p_nom_org or p_email, p_email, date_fin_calc, LIMITE_REQUETES_IA),
+                        )
+                        id_org_prospect = c_add.fetchone()[0]
+                        c_add.execute(
+                            """INSERT INTO utilisateurs
+                               (email, password, date_fin_essai, est_admin, nb_requetes_ia, organisation_id)
+                               VALUES (%s, %s, %s, 0, 0, %s)""",
+                            (p_email, hacher_mdp(p_pwd), date_fin_calc, id_org_prospect),
                         )
                         conn_add.commit()
+                        _charger_prospects_quotas.clear()
+                        _charger_prospects_liste.clear()
                         st.success(
                             f"Accès créé pour {p_email} jusqu'au"
                             f" {datetime.date.fromisoformat(date_fin_calc).strftime('%d/%m/%Y')} ! "
@@ -1590,6 +1739,10 @@ options_menu = [
     "🏹 SOURCING EXTERNE & CHASSE",
     "📋 GESTION ADMINISTRATIVE & RH"
 ]
+# Onglet visible UNIQUEMENT par l'administrateur de la plateforme.
+if st.session_state.get("is_admin"):
+    options_menu.append("🔐 ABONNEMENTS & CLIENTS")
+
 index_actuel = options_menu.index(st.session_state['page_active']) if st.session_state['page_active'] in options_menu else 0
 menu = st.sidebar.radio("MENU PRINCIPAL", options_menu, index=index_actuel)
 st.session_state['page_active'] = menu
@@ -1599,7 +1752,7 @@ if st.session_state['page_active'] == "🧭 TABLEAU DE BORD":
     st.header("🧭 Tableau de Bord — Synthèse Quotidienne")
     st.caption("Généré à partir des données existantes — aucune action n'est prise automatiquement, tout reste à valider par vous.")
 
-    digest = generer_digest_quotidien()
+    digest = generer_digest_quotidien(org_courante())
 
     col_d1, col_d2, col_d3 = st.columns(3)
     with col_d1: st.metric("🔔 Alertes de matching non lues", digest["alertes_non_lues"])
@@ -1685,7 +1838,7 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
     nom_colonne_poste = st.session_state.get("_vivier_nom_col_poste", "poste")
 
     try:
-        stats = _stats_vivier(conn)
+        stats = _stats_vivier(conn, org_courante())
         total_cand = stats[0] if stats[0] else 0
         dispo_cand = stats[1] if stats[1] else 0
         mission_cand = stats[2] if stats[2] else 0
@@ -1820,7 +1973,7 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
     secteur_filtre = st.selectbox("Sélectionnez le secteur à afficher :", LISTE_SECTEURS)
 
     try:
-        donnees = _charger_vivier_candidats(conn, nom_colonne_poste)
+        donnees = _charger_vivier_candidats(conn, nom_colonne_poste, org_courante())
         if donnees:
             df_vivier = pd.DataFrame(donnees, columns=["ID", "Nom", "Poste", "Coordonnées / Compétences", "Statut", "Catégorie", "Avis IA", "Score Match", "Secteur Métier"])
             if secteur_filtre != "Tous":
@@ -2330,7 +2483,7 @@ elif st.session_state["page_active"] == "🏢 PORTEFEUILLE CLIENTS":
   with col_filtre:
     st.subheader("🔍 Vos Comptes")
     try:
-      df_clients = _charger_clients(conn)
+      df_clients = _charger_clients(conn, org_courante())
       if not df_clients.empty:
         cols_to_show = df_clients[[
             "id",
@@ -2902,7 +3055,7 @@ elif st.session_state['page_active'] == "📊 PIPELINE DE RECRUTEMENT":
     # 1. Extraction des profils du vivier (mise en cache 10s pour éviter un
     #    aller-retour Supabase à chaque rerun pendant qu'on interagit sur la page)
     try:
-        candidats_pipeline = _charger_pipeline(conn)
+        candidats_pipeline = _charger_pipeline(conn, org_courante())
     except Exception as err:
         st.error(f"Erreur base de données : {err}")
         candidats_pipeline = []
@@ -3372,3 +3525,145 @@ Signature de l'employeur                 Signature du salarié
                     st.rerun()
                 except Exception as e:
                     st.error(f"Erreur enregistrement heures : {e}")
+
+
+# ==============================================================================
+# --- ONGLET ADMINISTRATEUR : ABONNEMENTS & CLIENTS ---
+# Pilotage commercial de la plateforme. Ne montre QUE des metadonnees de compte
+# et des compteurs : aucune donnee metier des clients n'y transite.
+# ==============================================================================
+if st.session_state.get("page_active") == "🔐 ABONNEMENTS & CLIENTS":
+    if not st.session_state.get("is_admin"):
+        st.error("⛔ Accès réservé à l'administrateur de la plateforme.")
+        st.stop()
+
+    st.header("🔐 Abonnements & Comptes Clients")
+    st.caption(
+        "Pilotage commercial. Cet écran affiche uniquement des informations de compte "
+        "et des compteurs d'usage — jamais le contenu des viviers, CV ou fiches clients "
+        "de vos abonnés, qui restent techniquement inaccessibles depuis ce compte."
+    )
+
+    try:
+        lignes_org = _charger_organisations_admin(conn)
+    except Exception as e_org:
+        st.error(f"Erreur de chargement : {e_org}")
+        lignes_org = []
+
+    if not lignes_org:
+        st.info("Aucun compte client pour le moment. Créez un accès prospect depuis la barre latérale.")
+    else:
+        aujourdhui = datetime.date.today()
+        nb_essai = sum(1 for l in lignes_org if l[3] == "ESSAI")
+        nb_actif = sum(1 for l in lignes_org if l[3] in ("ACTIF", "PRO"))
+        nb_expire = 0
+        for l in lignes_org:
+            if l[4]:
+                d_fin = l[4] if isinstance(l[4], datetime.date) else datetime.date.fromisoformat(str(l[4]))
+                if d_fin < aujourdhui and l[3] not in ("ACTIF", "PRO"):
+                    nb_expire += 1
+
+        k1, k2, k3, k4 = st.columns(4)
+        with k1: st.metric("🏢 Comptes clients", len(lignes_org))
+        with k2: st.metric("🧪 En essai", nb_essai)
+        with k3: st.metric("✅ Abonnés actifs", nb_actif)
+        with k4: st.metric("⏳ Essais expirés", nb_expire)
+
+        st.markdown("---")
+
+        for (o_id, o_nom, o_mail, o_statut, o_fin, o_req, o_quota,
+             o_cree, nb_cand, nb_cli, nb_ctr, derniere_co) in lignes_org:
+
+            if o_statut in ("ACTIF", "PRO"):
+                couleur, libelle = "#2e7d32", "✅ Abonné actif"
+            elif o_statut == "SUSPENDU":
+                couleur, libelle = "#4a5568", "⏸️ Suspendu"
+            else:
+                d_fin_calc = None
+                if o_fin:
+                    d_fin_calc = o_fin if isinstance(o_fin, datetime.date) else datetime.date.fromisoformat(str(o_fin))
+                if d_fin_calc and d_fin_calc < aujourdhui:
+                    couleur, libelle = "#c53030", "⏳ Essai expiré"
+                else:
+                    couleur, libelle = "#f59e0b", "🧪 En essai"
+
+            fin_txt = o_fin.strftime("%d/%m/%Y") if isinstance(o_fin, datetime.date) else (str(o_fin) if o_fin else "—")
+            co_txt = derniere_co.strftime("%d/%m/%Y à %Hh%M") if derniere_co else "jamais connecté"
+
+            st.markdown(f"""
+                <div style="background-color:#2d3748; border-radius:10px; padding:18px;
+                            margin-bottom:10px; border-left:5px solid {couleur};">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-size:18px; font-weight:700; color:#ffffff;">🏢 {o_nom}</span>
+                        <span style="background-color:{couleur}; color:white; padding:4px 14px;
+                                     border-radius:20px; font-weight:700; font-size:13px;">{libelle}</span>
+                    </div>
+                    <div style="color:#a3b1cc; font-size:13px; margin-top:6px;">
+                        {o_mail or '—'} &nbsp;·&nbsp; Fin d'essai : {fin_txt}
+                        &nbsp;·&nbsp; Dernière connexion : {co_txt}
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
+
+            cu1, cu2, cu3, cu4 = st.columns(4)
+            with cu1: st.metric("Candidats", nb_cand)
+            with cu2: st.metric("Clients", nb_cli)
+            with cu3: st.metric("Contrats", nb_ctr)
+            with cu4: st.metric("Requêtes IA", f"{o_req or 0} / {o_quota or 0}")
+
+            with st.expander(f"⚙️ Gérer l'abonnement — {o_nom}"):
+                ca1, ca2 = st.columns(2)
+                with ca1:
+                    nouveau_statut_org = st.selectbox(
+                        "Statut de l'abonnement :",
+                        ["ESSAI", "ACTIF", "PRO", "SUSPENDU", "EXPIRE"],
+                        index=["ESSAI", "ACTIF", "PRO", "SUSPENDU", "EXPIRE"].index(o_statut)
+                        if o_statut in ["ESSAI", "ACTIF", "PRO", "SUSPENDU", "EXPIRE"] else 0,
+                        key=f"statut_org_{o_id}",
+                    )
+                    jours_prolong = st.number_input(
+                        "Prolonger l'essai de (jours) :", min_value=0, max_value=365, value=0,
+                        key=f"prolong_org_{o_id}",
+                    )
+                with ca2:
+                    nouveau_quota_org = st.number_input(
+                        "Quota IA mensuel :", min_value=0, value=int(o_quota or 300),
+                        key=f"quota_org_{o_id}",
+                    )
+                    st.caption("Le quota est partagé par tous les utilisateurs de ce compte.")
+
+                cb1, cb2 = st.columns(2)
+                with cb1:
+                    if st.button("💾 Appliquer", key=f"maj_org_{o_id}", use_container_width=True, type="primary"):
+                        try:
+                            if jours_prolong > 0:
+                                base_date = aujourdhui
+                                if o_fin:
+                                    d_ref = o_fin if isinstance(o_fin, datetime.date) else datetime.date.fromisoformat(str(o_fin))
+                                    base_date = max(d_ref, aujourdhui)
+                                nouvelle_fin = (base_date + datetime.timedelta(days=int(jours_prolong))).isoformat()
+                                c.execute(
+                                    "UPDATE organisations SET statut_abonnement=%s, quota_max=%s, date_fin_essai=%s WHERE id=%s",
+                                    (nouveau_statut_org, int(nouveau_quota_org), nouvelle_fin, o_id),
+                                )
+                            else:
+                                c.execute(
+                                    "UPDATE organisations SET statut_abonnement=%s, quota_max=%s WHERE id=%s",
+                                    (nouveau_statut_org, int(nouveau_quota_org), o_id),
+                                )
+                            conn.commit()
+                            _charger_organisations_admin.clear()
+                            st.success(f"✅ Compte « {o_nom} » mis à jour.")
+                            st.rerun()
+                        except Exception as e_maj:
+                            st.error(f"Erreur : {e_maj}")
+                with cb2:
+                    if st.button("🔄 Remettre le quota IA à 0", key=f"reset_org_{o_id}", use_container_width=True):
+                        if reinitialiser_quota_ia(o_id):
+                            _charger_organisations_admin.clear()
+                            st.success("Quota réinitialisé.")
+                            st.rerun()
+                        else:
+                            st.error("Échec de la réinitialisation.")
+
+            st.markdown("---")
