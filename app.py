@@ -3267,20 +3267,41 @@ elif st.session_state['page_active'] == "🖥️ TRI & CLASSEMENT IA":
                             else:
                                 df_temp = pd.read_csv(f) if f.name.endswith('.csv') else pd.read_excel(f)
                                 texte = df_temp.to_string()
-                            donnees_analyse.append({"nom_fichier": f.name, "contenu": texte})
+                            donnees_analyse.append({"nom_fichier": f.name, "contenu": texte[:3000]})
 
                         model = genai.GenerativeModel("gemini-2.5-flash")
-                        prompt = f"Analyse cette liste par rapport au secteur '{secteur_cible_tri}' et le critère '{critere_important}'. Renvoie un tableau JSON avec : 'nom', 'poste_approprie', 'score_tri', 'points_forts'."
+                        prompt = f"""Tu es un expert recruteur. Analyse les documents suivants par rapport au secteur '{secteur_cible_tri}' et au critère prioritaire '{critere_important}'.
+
+Documents à analyser :
+{json.dumps(donnees_analyse, ensure_ascii=False)}
+
+Renvoie STRICTEMENT un tableau JSON valide (aucun texte autour, aucun markdown, aucun bloc de code),
+un objet par document, avec exactement ces clés :
+- "nom" : nom du fichier ou du candidat s'il est identifiable
+- "poste_approprie" : poste le plus adapté au profil selon le secteur cible
+- "score_tri" : entier 0-100 représentant l'adéquation avec le secteur et le critère
+- "points_forts" : une phrase courte sur les atouts principaux du profil"""
+
                         response = model.generate_content(prompt)
-                        txt_clean = response.text.strip().replace("```json", "").replace("```", "").strip()
-                        st.dataframe(pd.DataFrame(json.loads(txt_clean)), use_container_width=True)
+                        txt_raw = response.text.strip()
+                        # Nettoyage robuste : suppression des balises markdown et extraction du tableau JSON
+                        txt_raw = txt_raw.replace("```json", "").replace("```", "").strip()
+                        debut = txt_raw.find("[")
+                        fin = txt_raw.rfind("]")
+                        if debut == -1 or fin == -1:
+                            st.error("⚠️ L'IA n'a pas renvoyé de tableau JSON exploitable. Réessayez.")
+                        else:
+                            txt_clean = txt_raw[debut:fin + 1]
+                            df_resultat = pd.DataFrame(json.loads(txt_clean))
+                            st.success(f"✅ {len(df_resultat)} profil(s) analysé(s).")
+                            st.dataframe(df_resultat, use_container_width=True)
 
                         # Décompte du quota (1 crédit par fichier analysé)
                         user_email_actuel = st.session_state.get("user_email")
                         for _ in range(len(fichiers_tri)):
                             incrémenter_quota_ia(user_email_actuel)
 
-                    except Exception as e: 
+                    except Exception as e:
                         st.error(f"Erreur de traitement : {e}")
 
     with col_droite:
@@ -3321,19 +3342,21 @@ elif st.session_state['page_active'] == "🖥️ TRI & CLASSEMENT IA":
                 if st.button("✅ Confirmer l'ajout au vivier", key="btn_confirmer_cv_mail", use_container_width=True, type="primary"):
                     try:
                         resultat_mail = _save_candidate_to_sqlite(
-                            nom_complet=apercu.get("nom_complet", "Inconnu"),
-                            diplomes=apercu.get("diplomes", []),
-                            hard_skills=apercu.get("hard_skills", []),
-                            soft_skills_transferables=apercu.get("soft_skills_transferables", []),
-                            traits_dominants=apercu.get("traits_dominants", []),
-                            indices_parcours_pro=apercu.get("indices_parcours_pro", ""),
-                            indices_centres_interet=apercu.get("indices_centres_interet", ""),
-                            coherence_projet_pro=apercu.get("coherence_projet_pro", ""),
-                            metiers_cibles=apercu.get("metiers_cibles", []),
-                            pourcentage_adequation=apercu.get("pourcentage_adequation", 0),
-                            compte_rendu=apercu.get("compte_rendu", ""),
-                            secteur_metier=secteur_cv_mail,
-                            cv_texte=st.session_state.get("texte_cv_mail", ""),
+                            **{
+                                "nom_complet": apercu.get("nom_complet", "Inconnu"),
+                                "diplomes": apercu.get("diplomes", []),
+                                "hard_skills": apercu.get("hard_skills", []),
+                                "soft_skills_transferables": apercu.get("soft_skills_transferables", []),
+                                "traits_dominants": apercu.get("traits_dominants", []),
+                                "indices_parcours_pro": apercu.get("indices_parcours_pro", ""),
+                                "indices_centres_interet": apercu.get("indices_centres_interet", ""),
+                                "coherence_projet_pro": apercu.get("coherence_projet_pro", ""),
+                                "metiers_cibles": apercu.get("metiers_cibles", []),
+                                "pourcentage_adequation": apercu.get("pourcentage_adequation", 0),
+                                "compte_rendu": apercu.get("compte_rendu", ""),
+                                "secteur_metier": secteur_cv_mail,
+                                "cv_texte": st.session_state.get("texte_cv_mail", ""),
+                            }
                         )
                         st.success(resultat_mail.get("message", "Candidat ajouté."))
                         del st.session_state["apercu_cv_mail"]
