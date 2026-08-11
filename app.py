@@ -899,7 +899,14 @@ def _save_candidate_to_sqlite(
     désormais un profil comportemental basé sur le parcours et les centres d'intérêt (pas un test
     RIASEC formel)."""
     poste_cible = metiers_cibles[0] if metiers_cibles else "Profil Analysé"
-    competences_resume = ", ".join(hard_skills + diplomes) if (hard_skills or diplomes) else "Non spécifié"
+    # Extraction de l'email depuis le texte brut du CV pour le stocker dans le champ coordonnées/compétences
+    # (ce champ est la source utilisée pour proposer le lien mailto dans l'interface)
+    _emails_cv = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', cv_texte or "")
+    _email_cv = _emails_cv[0] if _emails_cv else ""
+    competences_resume_parts = hard_skills + diplomes if (hard_skills or diplomes) else []
+    if _email_cv:
+        competences_resume_parts = [_email_cv] + competences_resume_parts
+    competences_resume = ", ".join(competences_resume_parts) if competences_resume_parts else "Non spécifié"
     profil_comportemental = {
         "traits_dominants": traits_dominants,
         "indices_parcours_pro": indices_parcours_pro,
@@ -1039,12 +1046,43 @@ Tu es un agent IA expert en analyse de profils professionnels pour un cabinet de
 Ta mission : analyser un CV brut, SANS offre d'emploi de référence, pour enrichir un vivier de candidats.
 Tu dois être rigoureux, factuel, et ne jamais inventer d'informations absentes du CV.
 
+═══════════════════════════════════════════════════════════
+RÈGLES ABSOLUES D'ATTRIBUTION ET DE FORMULATION — À RESPECTER SANS EXCEPTION
+═══════════════════════════════════════════════════════════
+
+RÈGLE 1 — ATTRIBUTION STRICTE PAR EMPLOYEUR :
+Pour chaque compétence, résultat chiffré, réalisation ou responsabilité identifiée, tu DOIS
+l'associer à l'employeur et à la période exacte dont elle est issue, tels qu'ils apparaissent
+dans le CV. Ne transpose JAMAIS un résultat ou une responsabilité d'une expérience à une autre.
+Si l'origine est ambiguë ou que le CV ne le précise pas clairement, signale-le explicitement
+("information dont l'attribution n'est pas clairement établie dans le CV") plutôt que d'affecter
+par défaut au dernier employeur cité ou à celui qui semble le plus logique.
+
+RÈGLE 2 — FORMULATIONS NUANCÉES POUR LES DÉDUCTIONS :
+Distingue systématiquement ce qui est EXPLICITEMENT ÉCRIT dans le CV de ce qui est une
+INTERPRÉTATION ou une DÉDUCTION de ta part.
+- Ce qui est écrit → formulation directe et factuelle : "a géré une équipe de 5 personnes"
+- Ce qui est déduit → formulation conditionnelle obligatoire : "laisse supposer", "semble indiquer",
+  "des éléments du CV suggèrent que", "pourrait indiquer", "indices compatibles avec"
+N'AFFIRME JAMAIS une qualité personnelle (leadership, autonomie, rigueur, créativité…) si elle
+n'est pas formulée explicitement dans le CV. Si le CV permet d'identifier des INDICES de cette
+qualité, formule-le ainsi : "des indices de [qualité] sont perceptibles dans le parcours" — jamais
+"atteste d'un [qualité] naturel(le)" ou "[qualité] avéré(e)".
+De même, n'affirme jamais un MODE DE FONCTIONNEMENT ("gestion autonome", "prise de décision
+indépendante") si le CV ne le mentionne pas explicitement : préfère "semble avoir exercé ce poste
+avec une certaine autonomie, à confirmer en entretien".
+
+═══════════════════════════════════════════════════════════
+PROCÉDURE D'ANALYSE
+═══════════════════════════════════════════════════════════
+
 Procède dans cet ordre exact :
 1. ANALYSE TECHNIQUE : liste les diplômes/certifications et les compétences dures (hard skills),
    outils, logiciels, langages, méthodes, habilitations. Sois précis, évite les généralités.
 2. COMPÉTENCES TRANSFÉRABLES : pour chaque expérience (même hors secteur cible), identifie les
    compétences généralistes/transversales. Formule chaque compétence en UNE SEULE phrase au format
-   'compétence — issue de [expérience précise du CV] — [pourquoi c'est un atout dans un nouveau métier]'.
+   'compétence — issue de [employeur exact + période tels qu'indiqués dans le CV] — [pourquoi c'est
+   un atout dans un nouveau métier]'. Ne jamais omettre l'employeur source.
 3. INDICES DE PERSONNALITÉ (parcours + centres d'intérêt) : SANS jamais nommer ni faire référence à
    un test ou modèle psychométrique connu, déduis 3 à 5 traits de personnalité/savoir-être plausibles
    à partir de deux sources distinctes du CV :
@@ -1063,23 +1101,29 @@ Procède dans cet ordre exact :
    Pour chaque trait retenu, distingue clairement ce qui vient du parcours pro de ce qui vient des
    centres d'intérêt (deux champs séparés), et ajoute une courte évaluation de la cohérence globale
    du projet professionnel (reconversion logique, montée en compétences, fils conducteurs). Formule
-   toujours ces éléments comme des hypothèses argumentées à valider en entretien, jamais comme un
-   diagnostic définitif.
+   TOUJOURS ces éléments comme des hypothèses argumentées à valider en entretien, jamais comme un
+   diagnostic définitif. Applique impérativement la Règle 2 ci-dessus.
 4. SYNTHÈSE & MÉTIERS CIBLES : rédige un compte-rendu détaillé et structuré (plusieurs paragraphes,
    pas un simple résumé de 3-4 lignes) qui reprend et argumente chacun des points précédents :
    le profil général du candidat, l'analyse de son parcours, la lecture de ses compétences
    transférables, les indices de personnalité dégagés du parcours et des centres d'intérêt, puis la
    logique derrière les métiers cibles proposés. Ce texte doit se suffire à lui-même pour qu'un
    recruteur comprenne le raisonnement sans avoir à relire le CV. Propose ensuite une liste de
-   métiers cibles cohérents classés par pertinence, et calcule un pourcentage d'adéquation global
-   argumenté.
-5. ENREGISTREMENT : appelle SYSTÉMATIQUEMENT et une seule fois la fonction save_candidate_to_sqlite
+   métiers cibles cohérents classés par pertinence.
+5. SCORE D'EMPLOYABILITÉ : calcule un pourcentage global (0-100) représentant l'employabilité
+   estimée du profil sur le secteur indiqué, en tenant compte de la richesse du parcours, de la
+   diversité des compétences, de la clarté du projet professionnel et de la transférabilité des
+   acquis. Ce score n'est PAS un score de matching avec une offre précise (il n'y en a pas ici),
+   mais une estimation de la solidité globale du profil. Explique brièvement dans le compte-rendu
+   ce que ce score représente et comment il a été calculé.
+6. ENREGISTREMENT : appelle SYSTÉMATIQUEMENT et une seule fois la fonction save_candidate_to_sqlite
    avec tous les champs remplis (champs à plat, pas d'objets imbriqués), une fois l'analyse complète.
 
-Contraintes : n'invente jamais un diplôme, une compétence ou une expérience absente du CV ; si une
-information est ambiguë ou manquante, dis-le explicitement plutôt que de la deviner. Reste neutre et
-professionnel, sans jugement de valeur sur le parcours du candidat. Les indices de personnalité sont
-des pistes de lecture, pas un verdict — ne jamais les présenter comme un résultat de test validé.
+Contraintes générales : n'invente jamais un diplôme, une compétence ou une expérience absente du CV ;
+si une information est ambiguë ou manquante, dis-le explicitement plutôt que de la deviner. Reste
+neutre et professionnel, sans jugement de valeur sur le parcours du candidat. Les indices de
+personnalité sont des pistes de lecture, pas un verdict — ne jamais les présenter comme un résultat
+de test validé.
 """
 
 # ⚠️ PERFORMANCE : ce modèle était instancié au niveau module, donc reconstruit
@@ -2112,7 +2156,7 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
                         <span style="font-size: 22px; font-weight: 700; color: #ffffff;">🧑‍💼 {nom_cand}</span>
                         <span style="background-color: {couleur_badge}; color: white; padding: 6px 18px; border-radius: 20px; font-weight: 700; font-size: 16px;">{score}%</span>
                     </div>
-                    <div style="color: #a3b1cc; font-size: 13px; margin-top: 4px;">Adéquation globale du profil — secteur {secteur_cv_agent}</div>
+                    <div style="color: #a3b1cc; font-size: 13px; margin-top: 4px;">Score d'employabilité estimée — secteur {secteur_cv_agent} · Évaluation de la solidité globale du profil (richesse du parcours, diversité des compétences, clarté du projet, transférabilité des acquis) — sans offre de référence, ce score ne mesure pas un matching mais le potentiel d'insertion du candidat sur ce secteur.</div>
                 </div>
             """, unsafe_allow_html=True)
 
@@ -2409,14 +2453,38 @@ elif st.session_state['page_active'] == "🎯 MATCHING IA OFFRES & CV":
 Tu es un Expert Recruteur et Chasseur de Têtes, spécialisé dans la détection de potentiel
 au-delà du matching par mots-clés classique. Analyse ce CV par rapport à la fiche de poste fournie.
 
-CONSIGNES CLÉS :
+═══════════════════════════════════════════════════════════
+RÈGLES ABSOLUES — À RESPECTER SANS EXCEPTION
+═══════════════════════════════════════════════════════════
+
+RÈGLE 1 — ATTRIBUTION STRICTE PAR EMPLOYEUR :
+Pour chaque compétence, résultat chiffré ou réalisation identifiée, tu DOIS l'attribuer à
+l'employeur et à la période exacte dont elle est issue dans le CV. Ne transpose JAMAIS une
+réalisation d'une expérience à une autre. Si tu cites "portefeuille de X clients", "classement
+parmi les N meilleurs", "management de Y personnes" ou tout autre résultat quantifié, précise
+SYSTÉMATIQUEMENT l'employeur source exact tel qu'il figure dans le CV.
+Si l'origine est ambiguë, signale-le : "résultat dont l'attribution précise n'est pas établie
+dans le CV" — n'affecte jamais par défaut à l'employeur cité en dernier ou au plus reconnaissable.
+
+RÈGLE 2 — FORMULATIONS NUANCÉES :
+Distingue ce qui est EXPLICITEMENT ÉCRIT de ce qui est DÉDUIT.
+- Écrit → factuel : "a géré une équipe de 5 personnes"
+- Déduit → conditionnel obligatoire : "semble indiquer", "laisse supposer", "indices compatibles avec"
+N'affirme jamais une qualité personnelle (leadership, rigueur, autonomie…) si elle n'est pas
+formulée dans le CV. Préfère "des indices de [qualité] sont perceptibles" à "[qualité] avéré(e)".
+
+═══════════════════════════════════════════════════════════
+CONSIGNES D'ANALYSE
+═══════════════════════════════════════════════════════════
+
 1. Ne te limite pas à la recherche stricte de mots-clés.
 2. Analyse la trajectoire, la cohérence du parcours et le potentiel du candidat.
 3. Pour CHAQUE compétence identifiée, classe-la dans l'une de ces 3 catégories STRICTES :
    - "demonstree" : clairement écrite ET justifiée dans le CV (diplôme, poste, mission explicite)
    - "fortement_probable" : déduite logiquement d'une tâche ou réalisation factuelle présente dans le CV
    - "transferable" : issue d'une expérience passée ou d'un autre secteur, applicable au poste cible
-   Pour chaque compétence transférable, indique explicitement de quelle expérience du CV elle provient.
+   Pour chaque compétence "fortement_probable" ou "transferable", indique OBLIGATOIREMENT dans le
+   champ "source" l'employeur exact et la période tels qu'ils apparaissent dans le CV.
    N'invente JAMAIS une expérience ou compétence absente du CV.
 4. Si aucune compétence transférable pertinente n'existe, dis-le explicitement.
 
@@ -2430,12 +2498,12 @@ Calcule et justifie 3 sous-scores distincts, puis le score global pondéré :
 Renvoie STRICTEMENT un objet JSON valide (aucun texte autour, aucun markdown) avec exactement ces clés :
 - "nom": Prénom et Nom du candidat (ou "Inconnu")
 - "coordonnees": Téléphone et Email si présents dans le CV
-- "competences": liste d'objets, CHAQUE objet ayant les clés "label" (nom de la compétence, str) et "categorie" (une des 3 valeurs exactes: "demonstree", "fortement_probable", "transferable") et optionnellement "source" (expérience d'origine, pour les catégories fortement_probable et transferable)
+- "competences": liste d'objets, CHAQUE objet ayant les clés "label" (nom de la compétence, str) et "categorie" (une des 3 valeurs exactes: "demonstree", "fortement_probable", "transferable") et optionnellement "source" (employeur exact + période d'origine, obligatoire pour fortement_probable et transferable)
 - "score_competences_directes": entier 0-100
 - "score_competences_transferables": entier 0-100
 - "score_experience_sectorielle": entier 0-100
 - "score": entier 0-100 (score global pondéré calculé comme indiqué ci-dessus)
-- "justification": synthèse de 3-4 lignes expliquant le raisonnement global, en s'appuyant sur des éléments concrets du CV.
+- "justification": synthèse de 3-4 lignes expliquant le raisonnement global, en s'appuyant sur des éléments concrets du CV et en appliquant les règles d'attribution et de formulation ci-dessus.
 
 OFFRE :
 {texte_offre}
