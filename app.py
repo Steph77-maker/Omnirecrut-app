@@ -3860,86 +3860,128 @@ elif st.session_state['page_active'] == "📋 GESTION ADMINISTRATIVE & RH":
                 salarie_clean_gen = nom_salarie.split("(")[0].strip()
                 dt_limite_gen = date_embauche + timedelta(days=90)
 
-                # --- Détection IA de la Convention Collective ---
-                # Table de correspondance (secteur -> CCN générique) utilisée en
-                # dernier recours si l'IA échoue. Les mots-clés du poste sont
-                # essayés en premier (plus précis), puis on retombe sur le secteur.
+                # ==============================================================================
+                # --- DÉTECTION DE LA CONVENTION COLLECTIVE — SANS INVENTION DE NUMÉRO IDCC ---
+                # Laisser une IA générative produire librement un numéro IDCC est risqué :
+                # elle peut halluciner un code parfaitement plausible mais totalement erroné
+                # (ex. un code de la joaillerie proposé pour un métier de l'insertion pro).
+                # Stratégie retenue, volontairement conservatrice :
+                #   1) Recherche par mots-clés du poste dans une liste RESTREINTE et VÉRIFIÉE
+                #      de conventions collectives courantes.
+                #   2) Si aucun mot-clé ne matche : l'IA n'a PLUS le droit d'inventer un texte
+                #      libre — elle doit choisir UNE option parmi cette même liste fermée (ou
+                #      répondre "AUCUNE"). Toute réponse qui ne correspond pas mot pour mot à
+                #      une option de la liste est rejetée : impossible pour elle d'halluciner
+                #      un numéro qui n'existe pas dans nos options.
+                #   3) Si rien ne correspond avec confiance : on l'affiche clairement comme
+                #      "non déterminée" et on renvoie vers l'outil officiel du Ministère du
+                #      Travail plutôt que de risquer une fausse information.
+                # ==============================================================================
+                CCN_LISTE_VERIFIEE = [
+                    "Convention Collective Nationale des Hôtels, Cafés, Restaurants — HCR (IDCC 1979)",
+                    "Convention Collective Nationale de la Restauration Collective (IDCC 1266)",
+                    "Convention Collective Nationale des Transports Routiers et Activités Auxiliaires du Transport (IDCC 16)",
+                    "Convention Collective Nationale Syntec — Bureaux d'Études Techniques, Conseil, Ingénierie (IDCC 1486)",
+                    "Convention Collective Nationale du Commerce de Détail Non Alimentaire (IDCC 1517)",
+                    "Convention Collective Nationale du Commerce de Détail et de Gros à Prédominance Alimentaire (IDCC 2216)",
+                    "Convention Collective Nationale des Experts-Comptables et Commissaires aux Comptes (IDCC 787)",
+                    "Convention Collective Nationale des Missions Locales et PAIO — insertion professionnelle (IDCC 2190)",
+                    "Convention Collective Nationale des Organismes de Formation (IDCC 1516)",
+                    "Convention Collective Nationale des Ouvriers du Bâtiment (IDCC à confirmer selon effectif : 1596 ou 1597)",
+                    "Convention Collective Nationale des ETAM du Bâtiment (IDCC 2609)",
+                    "Convention Collective Nationale de la Métallurgie (IDCC à confirmer — convention nationale unifiée depuis 2024)",
+                ]
+
+                # Mots-clés du POSTE → correspondance directe et sans ambiguïté (priorité 1)
                 _ccn_par_mot_cle = {
-                    "cuisinier": "Convention Collective Nationale des Hôtels, Cafés, Restaurants — HCR (IDCC 1979)",
-                    "chef de cuisine": "Convention Collective Nationale des Hôtels, Cafés, Restaurants — HCR (IDCC 1979)",
-                    "serveur": "Convention Collective Nationale des Hôtels, Cafés, Restaurants — HCR (IDCC 1979)",
-                    "réceptionniste": "Convention Collective Nationale des Hôtels, Cafés, Restaurants — HCR (IDCC 1979)",
-                    "femme de chambre": "Convention Collective Nationale des Hôtels, Cafés, Restaurants — HCR (IDCC 1979)",
-                    "cantine": "Convention Collective Nationale de la Restauration Collective (IDCC 1266)",
-                    "collective": "Convention Collective Nationale de la Restauration Collective (IDCC 1266)",
-                    "maçon": "Convention Collective Nationale des Ouvriers du Bâtiment (IDCC 1597 / 1596 selon effectif)",
-                    "plombier": "Convention Collective Nationale des Ouvriers du Bâtiment (IDCC 1597 / 1596 selon effectif)",
-                    "électricien": "Convention Collective Nationale des Ouvriers du Bâtiment (IDCC 1597 / 1596 selon effectif)",
-                    "peintre": "Convention Collective Nationale des Ouvriers du Bâtiment (IDCC 1597 / 1596 selon effectif)",
-                    "conducteur de travaux": "Convention Collective Nationale des ETAM du Bâtiment (IDCC 2609)",
-                    "chauffeur": "Convention Collective Nationale des Transports Routiers et Activités Auxiliaires du Transport (IDCC 16)",
-                    "livreur": "Convention Collective Nationale des Transports Routiers et Activités Auxiliaires du Transport (IDCC 16)",
-                    "cariste": "Convention Collective Nationale des Transports Routiers et Activités Auxiliaires du Transport (IDCC 16)",
-                    "magasinier": "Convention Collective Nationale des Transports Routiers et Activités Auxiliaires du Transport (IDCC 16)",
-                    "développeur": "Convention Collective Nationale Syntec — Bureaux d'Études Techniques (IDCC 1486)",
-                    "ingénieur": "Convention Collective Nationale Syntec — Bureaux d'Études Techniques (IDCC 1486)",
-                    "consultant": "Convention Collective Nationale Syntec — Bureaux d'Études Techniques (IDCC 1486)",
-                    "comptable": "Convention Collective Nationale des Experts-Comptables et Commissaires aux Comptes (IDCC 787)",
-                    "assistant de direction": "Convention Collective Nationale du personnel des cabinets d'avocats ou CCN de branche selon employeur (à vérifier)",
-                    "vendeur": "Convention Collective Nationale du Commerce de Détail Non Alimentaire (IDCC 1517)",
-                    "caissier": "Convention Collective Nationale du Commerce de Détail et de Gros à Prédominance Alimentaire (IDCC 2216)",
-                    "ouvrier": "Convention Collective Nationale de la Métallurgie (IDCC selon la zone territoriale)",
-                    "technicien": "Convention Collective Nationale de la Métallurgie (IDCC selon la zone territoriale)",
-                    "opérateur de production": "Convention Collective Nationale de la Métallurgie (IDCC selon la zone territoriale)",
-                }
-                _ccn_par_secteur = {
-                    "Restauration / Hôtellerie": "Convention Collective Nationale des Hôtels, Cafés, Restaurants — HCR (IDCC 1979)",
-                    "Tertiaire / Bureau / PME": "Convention Collective Nationale Syntec — Bureaux d'Études Techniques (IDCC 1486), à confirmer selon l'activité exacte de l'entreprise",
-                    "Transport / Logistique": "Convention Collective Nationale des Transports Routiers et Activités Auxiliaires du Transport (IDCC 16)",
-                    "Bâtiment / TP": "Convention Collective Nationale des Ouvriers du Bâtiment (IDCC 1597 / 1596 selon effectif)",
-                    "Industrie / Technique": "Convention Collective Nationale de la Métallurgie (IDCC selon la zone territoriale)",
-                    "Autre": "Convention Collective Nationale applicable à l'activité principale de l'entreprise (à vérifier auprès de l'URSSAF/code APE)",
+                    "cuisinier": CCN_LISTE_VERIFIEE[0], "chef de cuisine": CCN_LISTE_VERIFIEE[0],
+                    "serveur": CCN_LISTE_VERIFIEE[0], "réceptionniste": CCN_LISTE_VERIFIEE[0],
+                    "femme de chambre": CCN_LISTE_VERIFIEE[0], "hôtel": CCN_LISTE_VERIFIEE[0],
+                    "cantine": CCN_LISTE_VERIFIEE[1], "restauration collective": CCN_LISTE_VERIFIEE[1],
+                    "chauffeur": CCN_LISTE_VERIFIEE[2], "livreur": CCN_LISTE_VERIFIEE[2],
+                    "cariste": CCN_LISTE_VERIFIEE[2], "magasinier": CCN_LISTE_VERIFIEE[2],
+                    "développeur": CCN_LISTE_VERIFIEE[3], "ingénieur logiciel": CCN_LISTE_VERIFIEE[3],
+                    "consultant": CCN_LISTE_VERIFIEE[3], "informatique": CCN_LISTE_VERIFIEE[3],
+                    "vendeur": CCN_LISTE_VERIFIEE[4],
+                    "caissier": CCN_LISTE_VERIFIEE[5],
+                    "comptable": CCN_LISTE_VERIFIEE[6], "expert-comptable": CCN_LISTE_VERIFIEE[6],
+                    "insertion": CCN_LISTE_VERIFIEE[7], "mission locale": CCN_LISTE_VERIFIEE[7],
+                    "conseiller emploi": CCN_LISTE_VERIFIEE[7], "conseiller en insertion": CCN_LISTE_VERIFIEE[7],
+                    "formateur": CCN_LISTE_VERIFIEE[8], "formation": CCN_LISTE_VERIFIEE[8],
+                    "maçon": CCN_LISTE_VERIFIEE[9], "plombier": CCN_LISTE_VERIFIEE[9],
+                    "électricien": CCN_LISTE_VERIFIEE[9], "peintre en bâtiment": CCN_LISTE_VERIFIEE[9],
+                    "conducteur de travaux": CCN_LISTE_VERIFIEE[10],
+                    "opérateur de production": CCN_LISTE_VERIFIEE[11], "technicien industriel": CCN_LISTE_VERIFIEE[11],
                 }
 
-                def _ccn_depuis_table_locale(poste_txt, secteur_txt):
+                def _ccn_par_mots_cles(poste_txt):
                     poste_lower_local = poste_txt.lower()
                     for mot_cle, ccn_val in _ccn_par_mot_cle.items():
                         if mot_cle in poste_lower_local:
                             return ccn_val
-                    return _ccn_par_secteur.get(secteur_txt, _ccn_par_secteur["Autre"])
+                    return None
+
+                CCN_NON_DETERMINEE = "⚠️ Non déterminée automatiquement — à identifier manuellement"
 
                 with st.spinner("🔍 Détection de la Convention Collective applicable..."):
-                    try:
-                        model_ccn = genai.GenerativeModel("gemini-2.5-flash")
-                        prompt_ccn = f"""Tu es un expert en droit du travail français, spécialisé dans l'identification des
-Conventions Collectives Nationales (CCN).
+                    ccn_ia = _ccn_par_mots_cles(saisie_poste)
+                    ccn_source = "mot-clé du poste" if ccn_ia else None
 
-Détermine la Convention Collective Nationale la plus probable, en te basant sur le code APE/NAF
-le plus vraisemblable de l'employeur, pour :
-- Poste : "{saisie_poste}"
-- Secteur d'activité déclaré par le recruteur : "{secteur_ccn_contrat}"
-- Entreprise cliente : "{nom_employeur}"
+                    if ccn_ia is None:
+                        # Aucun mot-clé direct : on demande à l'IA de CHOISIR parmi la liste
+                        # fermée ci-dessus (jamais de génération libre d'un numéro IDCC).
+                        try:
+                            model_ccn = genai.GenerativeModel("gemini-2.5-flash")
+                            options_texte = "\n".join(f"- {opt}" for opt in CCN_LISTE_VERIFIEE)
+                            prompt_ccn = f"""Voici une liste FERMÉE de conventions collectives nationales françaises :
+{options_texte}
 
-Réponds UNIQUEMENT avec le nom officiel complet de la convention collective suivi de son
-numéro IDCC entre parenthèses, au format : "Convention Collective Nationale de/des/du [nom] (IDCC [numéro])".
-Aucun texte, explication ou ponctuation supplémentaire avant ou après.
-Si un doute existe entre plusieurs conventions possibles, choisis la plus courante pour ce
-type de poste et ce secteur en France."""
-                        resp_ccn = model_ccn.generate_content(prompt_ccn)
-                        ccn_ia = resp_ccn.text.strip().split("\n")[0].strip()
-                        if len(ccn_ia) < 15 or len(ccn_ia) > 250 or "IDCC" not in ccn_ia.upper():
-                            raise ValueError("Réponse CCN non exploitable")
-                    except Exception:
-                        ccn_ia = _ccn_depuis_table_locale(saisie_poste, secteur_ccn_contrat)
-                    incrémenter_quota_ia(st.session_state.get("user_email"))
+Pour le poste "{saisie_poste}" (secteur déclaré : "{secteur_ccn_contrat}", entreprise : "{nom_employeur}"),
+recopie EXACTEMENT, caractère pour caractère, l'une des lignes ci-dessus si elle correspond
+clairement à ce poste. Si AUCUNE des lignes ci-dessus ne correspond avec certitude, réponds
+uniquement le mot : AUCUNE
+N'invente jamais une convention, un nom ou un numéro qui n'est pas dans la liste fournie."""
+                            resp_ccn = model_ccn.generate_content(prompt_ccn)
+                            reponse_ia = resp_ccn.text.strip()
+                            # Validation stricte : la réponse doit correspondre mot pour mot à
+                            # une option de la liste fermée — sinon impossible d'halluciner.
+                            if reponse_ia in CCN_LISTE_VERIFIEE:
+                                ccn_ia = reponse_ia
+                                ccn_source = "choix IA parmi la liste vérifiée"
+                            else:
+                                ccn_ia = CCN_NON_DETERMINEE
+                                ccn_source = "aucune correspondance fiable"
+                        except Exception:
+                            ccn_ia = CCN_NON_DETERMINEE
+                            ccn_source = "erreur IA"
+                        incrémenter_quota_ia(st.session_state.get("user_email"))
 
-                st.info(f"📋 **Convention Collective détectée par l'IA :** {ccn_ia}")
+                if ccn_ia == CCN_NON_DETERMINEE:
+                    st.warning(
+                        "⚠️ **Aucune Convention Collective n'a pu être déterminée avec confiance** "
+                        "pour ce poste. Merci de la renseigner manuellement à l'étape suivante."
+                    )
+                else:
+                    st.info(f"📋 **Convention Collective suggérée** ({ccn_source}) : {ccn_ia}")
                 st.caption(
-                    "⚠️ Suggestion automatique à vérifier — elle sera modifiable à l'étape suivante "
-                    "avant génération du PDF définitif."
+                    "⚠️ Cette suggestion doit systématiquement être vérifiée avant signature — "
+                    "elle reste modifiable à l'étape suivante. Vérification officielle : "
+                    "outil du Ministère du Travail ci-dessous."
+                )
+                st.link_button(
+                    "🔗 Vérifier sur le site officiel du Ministère du Travail",
+                    "https://code.travail.gouv.fr/outils/convention-collective",
+                    use_container_width=False,
                 )
 
                 # --- Génération du texte brut du projet de contrat ---
+                # Texte inséré dans le corps du contrat : jamais l'avertissement brut si
+                # aucune CCN n'a pu être déterminée — un texte neutre à compléter à la place.
+                ccn_pour_texte = (
+                    ccn_ia if ccn_ia != CCN_NON_DETERMINEE
+                    else "[Convention Collective à compléter manuellement — non déterminée automatiquement]"
+                )
+
                 if date_fin_m is not None:
                     phrase_duree = (
                         f"Le contrat débute le {date_embauche.strftime('%d/%m/%Y')} "
@@ -3978,7 +4020,7 @@ Le Salarié devra se soumettre à la visite médicale d'embauche avant le {dt_li
 
 6. DISPOSITIONS LÉGALES ET CONVENTIONNELLES
 Le présent contrat est soumis aux dispositions de la :
-{ccn_ia}
+{ccn_pour_texte}
 
 Toute clause du présent contrat contraire aux dispositions légales ou conventionnelles
 applicables sera réputée non écrite ; les dispositions légales ou conventionnelles
@@ -3995,7 +4037,7 @@ Signature de l'Employeur                    Signature du Salarié
 
                 # Stockage en session pour la phase de relecture
                 st.session_state["contrat_projet_texte"] = texte_projet_contrat
-                st.session_state["contrat_projet_ccn"] = ccn_ia
+                st.session_state["contrat_projet_ccn"] = ccn_ia if ccn_ia != CCN_NON_DETERMINEE else ""
                 st.session_state["contrat_projet_salarie"] = salarie_clean_gen
                 st.session_state["contrat_projet_employeur"] = nom_employeur
                 st.session_state["contrat_projet_type"] = type_ct
@@ -4032,13 +4074,19 @@ Signature de l'Employeur                    Signature du Salarié
                 "📋 Convention Collective Nationale applicable (modifiable) :",
                 value=st.session_state.get("contrat_projet_ccn", ""),
                 key="contrat_ccn_editable",
-                help="Corrigez ici si la suggestion de l'IA ne correspond pas à l'activité réelle de l'entreprise.",
+                help="Corrigez ici si la suggestion de l'IA ne correspond pas à l'activité réelle de l'entreprise, ou complétez-la si elle n'a pas pu être déterminée automatiquement.",
+                placeholder="Ex : Convention Collective Nationale ... (IDCC ...)",
             )
             if ccn_editee != st.session_state.get("contrat_projet_ccn", ""):
                 ancienne_ccn = st.session_state.get("contrat_projet_ccn", "")
+                _placeholder_ccn = "[Convention Collective à compléter manuellement — non déterminée automatiquement]"
                 if ancienne_ccn and ancienne_ccn in st.session_state["contrat_projet_texte"]:
                     st.session_state["contrat_projet_texte"] = st.session_state["contrat_projet_texte"].replace(
                         ancienne_ccn, ccn_editee
+                    )
+                elif not ancienne_ccn and _placeholder_ccn in st.session_state["contrat_projet_texte"]:
+                    st.session_state["contrat_projet_texte"] = st.session_state["contrat_projet_texte"].replace(
+                        _placeholder_ccn, ccn_editee
                     )
                 st.session_state["contrat_projet_ccn"] = ccn_editee
 
