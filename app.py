@@ -3776,15 +3776,39 @@ elif st.session_state['page_active'] == "📋 GESTION ADMINISTRATIVE & RH":
     # ==============================================================================
     with ss_onglet1:
         st.markdown('<h3 style="color: white; margin-top: 10px;">📝 Génération Assistée du Contrat de Travail</h3>', unsafe_allow_html=True)
-        
+
+        # --------------------------------------------------------------------
+        # GARDE-FOU : st.date_input peut, selon la version de Streamlit et la
+        # séquence d'interactions (notamment après un st.rerun() déclenché par
+        # un autre bouton de la page, comme "Nouveau contrat"), renvoyer un
+        # tuple de dates ou une valeur inattendue au lieu d'un objet date unique.
+        # C'est la cause du "AttributeError: 'tuple' object has no attribute
+        # 'strftime'" observé à partir du 2e contrat généré dans la même
+        # session. On normalise systématiquement AVANT toute utilisation.
+        # --------------------------------------------------------------------
+        def _coercer_date_unique(valeur):
+            if isinstance(valeur, (tuple, list)):
+                valeur = valeur[0] if valeur else None
+            if isinstance(valeur, datetime.datetime):
+                return valeur.date()
+            if isinstance(valeur, datetime.date):
+                return valeur
+            if isinstance(valeur, str) and valeur:
+                for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
+                    try:
+                        return datetime.datetime.strptime(valeur, fmt).date()
+                    except ValueError:
+                        continue
+            return datetime.date.today()
+
         col_c1, col_c2 = st.columns(2)
         with col_c1:
             nom_salarie = st.selectbox("Sélectionner le salarié / intérimaire :", ["-- Choisir un profil --"] + list_cand, key="rh_salarie")
             type_ct = st.selectbox("Type de contrat :", ["CDI", "CDD", "CTT (Intérim)", "Alternance / Apprentissage"])
-            date_embauche = st.date_input("🗓️ Date de début de contrat / mission :", key="rh_date_debut")
+            date_embauche = _coercer_date_unique(st.date_input("🗓️ Date de début de contrat / mission :", key="rh_date_debut"))
         with col_c2:
             nom_employeur = st.selectbox("Sélectionner l'entreprise utilisatrice/cliente :", ["-- Choisir une entreprise --"] + list_cli, key="rh_client")
-            date_fin_m = st.date_input("🗓️ Date de fin de contrat / mission (Estimée) :", key="rh_date_fin_mission")
+            date_fin_m = _coercer_date_unique(st.date_input("🗓️ Date de fin de contrat / mission (Estimée) :", key="rh_date_fin_mission"))
             salaire_brut = st.number_input("Rémunération brute mensuelle en € :", min_value=0.0, step=50.0)
         
         col_c3, col_c4 = st.columns(2)
