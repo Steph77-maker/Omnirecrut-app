@@ -3292,9 +3292,65 @@ un objet par document, avec exactement ces clés :
                             st.error("⚠️ L'IA n'a pas renvoyé de tableau JSON exploitable. Réessayez.")
                         else:
                             txt_clean = txt_raw[debut:fin + 1]
-                            df_resultat = pd.DataFrame(json.loads(txt_clean))
+                            resultats_tri = json.loads(txt_clean)
+                            df_resultat = pd.DataFrame(resultats_tri)
                             st.success(f"✅ {len(df_resultat)} profil(s) analysé(s).")
                             st.dataframe(df_resultat, use_container_width=True)
+
+                            # -------------------------------------------------------
+                            # INJECTION AUTOMATIQUE DANS LE VIVIER
+                            # Chaque candidat qualifié (score_tri >= 50) est inséré
+                            # automatiquement dans la table candidats avec statut
+                            # "Disponible" et la catégorie IA correspondante au score.
+                            # -------------------------------------------------------
+                            candidats_injectes = 0
+                            for ligne_tri in resultats_tri:
+                                try:
+                                    score_val = int(ligne_tri.get("score_tri", 0) or 0)
+                                    if score_val < 50:
+                                        continue  # profils trop faibles écartés
+                                    nom_tri = str(ligne_tri.get("nom", "Inconnu"))[:200]
+                                    poste_tri = str(ligne_tri.get("poste_approprie", secteur_cible_tri))[:200]
+                                    points_forts_tri = str(ligne_tri.get("points_forts", ""))[:500]
+                                    # Attribution de la catégorie IA selon le score
+                                    if score_val >= 80:
+                                        categorie_tri = "⭐ Top Profil"
+                                    elif score_val >= 65:
+                                        categorie_tri = "✅ Profil Confirmé"
+                                    elif score_val >= 50:
+                                        categorie_tri = "🌱 Junior / Débutant"
+                                    else:
+                                        categorie_tri = "À Classer"
+                                    c.execute(
+                                        """INSERT INTO candidats
+                                           (nom, poste, competences, statut, categorie_ia,
+                                            avis_ia, score_matching, secteur_metier, date_ajout)
+                                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                                        (
+                                            nom_tri,
+                                            poste_tri,
+                                            critere_important or secteur_cible_tri,
+                                            "Disponible",
+                                            categorie_tri,
+                                            points_forts_tri,
+                                            f"{score_val} %",
+                                            secteur_cible_tri,
+                                            datetime.datetime.now().isoformat(),
+                                        ),
+                                    )
+                                    candidats_injectes += 1
+                                except Exception:
+                                    pass
+                            if candidats_injectes > 0:
+                                conn.commit()
+                                _charger_vivier_candidats.clear()
+                                st.success(
+                                    f"🎯 **{candidats_injectes} fiche(s) automatiquement injectée(s)**"
+                                    f" et classée(s) dans le Vivier (secteur : {secteur_cible_tri})."
+                                    " Statut : **Disponible** — catégorie IA attribuée selon le score."
+                                )
+                            else:
+                                st.info("ℹ️ Aucun profil n'a atteint le seuil d'injection automatique (score ≥ 50).")
 
                         # Décompte du quota (1 crédit par fichier analysé)
                         user_email_actuel = st.session_state.get("user_email")
@@ -3738,83 +3794,263 @@ elif st.session_state['page_active'] == "📋 GESTION ADMINISTRATIVE & RH":
             periode_essai = st.number_input("Période d'essai (en jours) :", min_value=0, max_value=30, value=5)
         
         statut_mission = st.checkbox("Activer immédiatement la mission", value=True, key="rh_sync_statut")
-        
-        if st.button("🚀 Générer le Contrat PDF Professionnel", type="primary", use_container_width=True):
+
+        # ==============================================================================
+        # ÉTAPE 1 — Détection IA de la Convention Collective + génération du projet
+        # L'utilisateur peut modifier le texte avant de valider le PDF définitif.
+        # ==============================================================================
+        if st.button("🧠 Générer le projet de contrat (avec CCN automatique)", type="primary", use_container_width=True):
             if nom_salarie == "-- Choisir un profil --" or nom_employeur == "-- Choisir une entreprise --":
                 st.error("⚠️ Veuillez sélectionner un salarié et une entreprise.")
             elif not saisie_poste.strip():
                 st.error("⚠️ Veuillez saisir un intitulé de poste.")
+            elif not peut_utiliser_ia(st.session_state.get("user_email")):
+                st.error("⚠️ Quota IA mensuel atteint. Contactez l'administrateur.")
             else:
-                from fpdf import FPDF
                 from datetime import timedelta
-                
-                salarie_clean = nom_salarie.split("(")[0].strip()
-                dt_limite = date_embauche + timedelta(days=90)
-                ccn_detectee = "Convention Collective Nationale de la Restauration Collective (IDCC 1266)" if any(x in saisie_poste.lower() for x in ["cuisinier", "chef", "restauration"]) else "Convention Collective Nationale applicable"
-                
-                # Enregistrement en base
-                c.execute(f"INSERT INTO contrats (candidat_nom, {entreprise_col}, type_contrat, poste, date_debut, date_fin, convention_collective, date_limite_medecine) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
-                          (salarie_clean, nom_employeur, type_ct, saisie_poste, date_embauche.strftime('%Y-%m-%d'), date_fin_m.strftime('%Y-%m-%d'), ccn_detectee, dt_limite.strftime('%Y-%m-%d')))
-                id_nouveau_contrat = c.fetchone()[0]
-                c.execute("UPDATE candidats SET statut = %s, poste = %s WHERE nom = %s", ("En mission", saisie_poste, salarie_clean))
-                conn.commit()
-                _charger_vivier_candidats.clear()
+                salarie_clean_gen = nom_salarie.split("(")[0].strip()
+                dt_limite_gen = date_embauche + timedelta(days=90)
 
-                # --- Veille réglementaire proactive : suggestion générée automatiquement,
-                # stockée à part, JAMAIS injectée dans les notes officielles sans validation
-                # humaine explicite (voir onglet Suivi Médecine du Travail).
-                suggestion_med = generer_suggestion_medecine(saisie_poste)
-                if suggestion_med:
-                    c.execute("UPDATE contrats SET suggestion_ia_medecine = %s WHERE id = %s", (suggestion_med, id_nouveau_contrat))
-                    conn.commit()
+                # --- Détection IA de la Convention Collective ---
+                with st.spinner("🔍 Détection de la Convention Collective applicable..."):
+                    try:
+                        model_ccn = genai.GenerativeModel("gemini-2.5-flash")
+                        prompt_ccn = (
+                            f"Quel est le nom exact (avec l'IDCC si possible) de la Convention Collective "
+                            f"Nationale applicable en France pour le poste de '{saisie_poste}' dans le secteur "
+                            f"'{secteur_cible_tri if 'secteur_cible_tri' in dir() else 'Général'}' ?\n"
+                            f"Réponds UNIQUEMENT par le nom officiel de la convention collective, sans aucun texte supplémentaire."
+                        )
+                        resp_ccn = model_ccn.generate_content(prompt_ccn)
+                        ccn_ia = resp_ccn.text.strip().split("\n")[0].strip()
+                        if len(ccn_ia) < 10 or len(ccn_ia) > 300:
+                            raise ValueError("Réponse CCN invalide")
+                    except Exception:
+                        # Fallback table de correspondance statique
+                        _ccn_table = {
+                            "cuisinier": "Convention Collective Nationale des Hôtels, Cafés, Restaurants (IDCC 1979)",
+                            "chef": "Convention Collective Nationale des Hôtels, Cafés, Restaurants (IDCC 1979)",
+                            "restauration": "Convention Collective Nationale de la Restauration Collective (IDCC 1266)",
+                            "serveur": "Convention Collective Nationale des Hôtels, Cafés, Restaurants (IDCC 1979)",
+                            "btp": "Convention Collective Nationale des ouvriers du Bâtiment (IDCC 1597)",
+                            "bâtiment": "Convention Collective Nationale des ouvriers du Bâtiment (IDCC 1597)",
+                            "maçon": "Convention Collective Nationale des ouvriers du Bâtiment (IDCC 1597)",
+                            "chauffeur": "Convention Collective Nationale des Transports Routiers (IDCC 16)",
+                            "livreur": "Convention Collective Nationale des Transports Routiers (IDCC 16)",
+                            "transport": "Convention Collective Nationale des Transports Routiers (IDCC 16)",
+                            "informatique": "Convention Collective Nationale Syntec (IDCC 1486)",
+                            "développeur": "Convention Collective Nationale Syntec (IDCC 1486)",
+                            "ingénieur": "Convention Collective Nationale Syntec (IDCC 1486)",
+                            "commerce": "Convention Collective Nationale du Commerce de Détail Non Alimentaire (IDCC 1517)",
+                            "vendeur": "Convention Collective Nationale du Commerce de Détail Non Alimentaire (IDCC 1517)",
+                        }
+                        poste_lower = saisie_poste.lower()
+                        ccn_ia = next(
+                            (v for k, v in _ccn_table.items() if k in poste_lower),
+                            "Convention Collective Nationale applicable (à préciser selon le secteur)"
+                        )
+                    incrémenter_quota_ia(st.session_state.get("user_email"))
 
-                # Création du PDF pro complet
-                pdf = FPDF()
-                pdf.add_page()
-                
-                # Titre
-                pdf.set_font("Helvetica", 'B', 16)
-                pdf.cell(0, 10, f"CONTRAT DE TRAVAIL {type_ct}", ln=True, align='C')
-                pdf.ln(10)
-                
-                # Corps du texte structuré
-                pdf.set_font("Helvetica", '', 11)
-                contenu = f"""
-Entre la société {nom_employeur} et M. {salarie_clean},
+                st.info(f"📋 **Convention Collective détectée par l'IA :** {ccn_ia}")
+
+                # --- Génération du texte brut du projet de contrat ---
+                texte_projet_contrat = f"""CONTRAT DE TRAVAIL {type_ct}
+=====================================
+
+Entre la société {nom_employeur} (ci-après "l'Employeur")
+et M./Mme {salarie_clean_gen} (ci-après "le Salarié"),
+
+Il est convenu ce qui suit :
 
 1. NATURE DU CONTRAT
 Le présent contrat est conclu en tant que {type_ct}.
 
 2. FONCTIONS ET LIEU DE TRAVAIL
-Le salarié est engagé en qualité de {saisie_poste.upper()}. 
-Il exercera ses fonctions sous la responsabilité de la direction.
+Le Salarié est engagé en qualité de {saisie_poste.upper()}.
+Il exercera ses fonctions sous la responsabilité de la direction de {nom_employeur}.
 
-3. DUREE ET REMUNERATION
+3. DURÉE ET RÉMUNÉRATION
 Le contrat débute le {date_embauche.strftime('%d/%m/%Y')} et prendra fin le {date_fin_m.strftime('%d/%m/%Y')}.
-La rémunération brute mensuelle est fixée à {salaire_brut:.2f} Euros.
+La rémunération brute mensuelle est fixée à {salaire_brut:.2f} EUR.
 
-4. PERIODE D'ESSAI
-Le contrat prévoit une période d'essai de {periode_essai} jours.
+4. PÉRIODE D'ESSAI
+Le présent contrat prévoit une période d'essai de {periode_essai} jours.
 
-5. DISPOSITIONS LEGALES
-Le salarié déclare avoir pris connaissance des dispositions de la {ccn_detectee}.
+5. OBLIGATIONS DE SÉCURITÉ ET VISITE MÉDICALE
+Le Salarié devra se soumettre à la visite médicale d'embauche avant le {dt_limite_gen.strftime('%d/%m/%Y')}.
+
+6. DISPOSITIONS LÉGALES ET CONVENTIONNELLES
+Le présent contrat est soumis aux dispositions de la :
+{ccn_ia}
+
+Toute clause du présent contrat contraire aux dispositions légales ou conventionnelles
+applicables sera réputée non écrite ; les dispositions légales ou conventionnelles
+s'appliqueront de plein droit.
+
+7. CONFIDENTIALITÉ
+Le Salarié s'engage à respecter la confidentialité des informations auxquelles
+il aura accès dans le cadre de l'exécution de ses fonctions.
 
 Fait à Béziers, le {date_embauche.strftime('%d/%m/%Y')}.
-Signature de l'employeur                 Signature du salarié
-                """
-                pdf.multi_cell(0, 7, contenu)
-                
-                # Conversion propre pour Streamlit
-                pdf_data = pdf.output(dest='S')
-                final_bytes = bytes(pdf_data) if isinstance(pdf_data, (bytearray, bytes)) else pdf_data.encode('latin-1')
 
-                st.download_button(
-                    label="📥 Télécharger le Contrat PDF officiel",
-                    data=final_bytes,
-                    file_name=f"Contrat_{salarie_clean}.pdf",
-                    mime="application/pdf"
-                )
-                st.success("✅ Contrat enregistré et PDF généré !")
+Signature de l'Employeur                    Signature du Salarié
+(Précédée de la mention "Lu et approuvé")   (Précédée de la mention "Lu et approuvé")"""
+
+                # Stockage en session pour la phase de relecture
+                st.session_state["contrat_projet_texte"] = texte_projet_contrat
+                st.session_state["contrat_projet_ccn"] = ccn_ia
+                st.session_state["contrat_projet_salarie"] = salarie_clean_gen
+                st.session_state["contrat_projet_employeur"] = nom_employeur
+                st.session_state["contrat_projet_type"] = type_ct
+                st.session_state["contrat_projet_poste"] = saisie_poste
+                st.session_state["contrat_projet_debut"] = date_embauche
+                st.session_state["contrat_projet_fin"] = date_fin_m
+                st.session_state["contrat_projet_dt_limite"] = dt_limite_gen
+                st.session_state["contrat_projet_salaire"] = salaire_brut
+                st.session_state["contrat_projet_periode_essai"] = periode_essai
+                st.session_state["contrat_pdf_genere"] = False
+
+        # ==============================================================================
+        # ÉTAPE 2 — ZONE DE RELECTURE / ÉDITION DU PROJET DE CONTRAT
+        # Visible dès que le projet a été généré, tant que le PDF n'a pas été validé.
+        # ==============================================================================
+        if st.session_state.get("contrat_projet_texte") and not st.session_state.get("contrat_pdf_genere"):
+            st.markdown("---")
+            st.markdown(
+                "### ✏️ Étape 2 — Relecture et édition du projet de contrat",
+                help="Modifiez librement le texte ci-dessous avant de générer le PDF définitif."
+            )
+            st.info(
+                f"📋 **Convention Collective pré-remplie :** {st.session_state.get('contrat_projet_ccn', '')}"
+            )
+            st.caption(
+                "⚠️ Vous pouvez modifier, ajuster ou ajouter des clauses directement dans le champ ci-dessous. "
+                "Le PDF sera généré à partir de ce texte final."
+            )
+
+            texte_edite_contrat = st.text_area(
+                label="Projet de contrat (modifiable) :",
+                value=st.session_state["contrat_projet_texte"],
+                height=500,
+                key="contrat_texte_editable",
+            )
+            # Synchronisation du texte édité
+            if texte_edite_contrat != st.session_state["contrat_projet_texte"]:
+                st.session_state["contrat_projet_texte"] = texte_edite_contrat
+
+            col_valider_contrat, col_annuler_contrat = st.columns([3, 1])
+            with col_annuler_contrat:
+                if st.button("🗑️ Annuler", key="btn_annuler_contrat", use_container_width=True):
+                    for k in [
+                        "contrat_projet_texte", "contrat_projet_ccn", "contrat_projet_salarie",
+                        "contrat_projet_employeur", "contrat_projet_type", "contrat_projet_poste",
+                        "contrat_projet_debut", "contrat_projet_fin", "contrat_projet_dt_limite",
+                        "contrat_projet_salaire", "contrat_projet_periode_essai", "contrat_pdf_genere"
+                    ]:
+                        st.session_state.pop(k, None)
+                    st.rerun()
+
+            with col_valider_contrat:
+                # ==============================================================================
+                # ÉTAPE 3 — VALIDATION & GÉNÉRATION DU PDF DÉFINITIF
+                # ==============================================================================
+                if st.button("📄 Valider et Générer le PDF Définitif", type="primary", use_container_width=True, key="btn_valider_contrat"):
+                    from fpdf import FPDF
+
+                    salarie_clean_final = st.session_state.get("contrat_projet_salarie", "Salarié")
+                    nom_employeur_final = st.session_state.get("contrat_projet_employeur", "Employeur")
+                    type_ct_final = st.session_state.get("contrat_projet_type", "CDI")
+                    saisie_poste_final = st.session_state.get("contrat_projet_poste", "Poste")
+                    date_embauche_final = st.session_state.get("contrat_projet_debut")
+                    date_fin_final = st.session_state.get("contrat_projet_fin")
+                    dt_limite_final = st.session_state.get("contrat_projet_dt_limite")
+                    ccn_final = st.session_state.get("contrat_projet_ccn", "CCN applicable")
+                    texte_final = st.session_state.get("contrat_projet_texte", "")
+
+                    try:
+                        # Enregistrement en base avec la CCN IA
+                        c.execute(
+                            f"""INSERT INTO contrats
+                               (candidat_nom, {entreprise_col}, type_contrat, poste,
+                                date_debut, date_fin, convention_collective, date_limite_medecine)
+                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                            (
+                                salarie_clean_final,
+                                nom_employeur_final,
+                                type_ct_final,
+                                saisie_poste_final,
+                                date_embauche_final.strftime('%Y-%m-%d') if date_embauche_final else None,
+                                date_fin_final.strftime('%Y-%m-%d') if date_fin_final else None,
+                                ccn_final,
+                                dt_limite_final.strftime('%Y-%m-%d') if dt_limite_final else None,
+                            )
+                        )
+                        id_nouveau_contrat = c.fetchone()[0]
+                        c.execute(
+                            "UPDATE candidats SET statut = %s, poste = %s WHERE nom = %s",
+                            ("En mission", saisie_poste_final, salarie_clean_final)
+                        )
+                        conn.commit()
+                        _charger_vivier_candidats.clear()
+
+                        # Suggestion médecine (stockée séparément, validation humaine requise)
+                        suggestion_med = generer_suggestion_medecine(saisie_poste_final)
+                        if suggestion_med:
+                            c.execute(
+                                "UPDATE contrats SET suggestion_ia_medecine = %s WHERE id = %s",
+                                (suggestion_med, id_nouveau_contrat)
+                            )
+                            conn.commit()
+
+                        # Génération du PDF à partir du TEXTE FINAL (modifié par l'utilisateur)
+                        pdf_final = FPDF()
+                        pdf_final.add_page()
+                        pdf_final.set_font("Helvetica", 'B', 16)
+                        pdf_final.cell(0, 10, f"CONTRAT DE TRAVAIL {type_ct_final}", ln=True, align='C')
+                        pdf_final.ln(8)
+                        pdf_final.set_font("Helvetica", '', 11)
+                        # On encode le texte pour éviter les caractères non latin-1
+                        texte_encode = texte_final.encode('latin-1', errors='replace').decode('latin-1')
+                        pdf_final.multi_cell(0, 7, texte_encode)
+
+                        pdf_data_final = pdf_final.output(dest='S')
+                        final_bytes = (
+                            bytes(pdf_data_final)
+                            if isinstance(pdf_data_final, (bytearray, bytes))
+                            else pdf_data_final.encode('latin-1')
+                        )
+
+                        st.session_state["contrat_pdf_bytes"] = final_bytes
+                        st.session_state["contrat_pdf_nom"] = f"Contrat_{salarie_clean_final}.pdf"
+                        st.session_state["contrat_pdf_genere"] = True
+                        st.success(f"✅ Contrat enregistré en base et PDF définitif prêt pour **{salarie_clean_final}** !")
+                        st.rerun()
+
+                    except Exception as e_pdf:
+                        st.error(f"Erreur lors de la génération du PDF : {e_pdf}")
+
+        # ==============================================================================
+        # AFFICHAGE DU BOUTON DE TÉLÉCHARGEMENT (après validation)
+        # ==============================================================================
+        if st.session_state.get("contrat_pdf_genere") and st.session_state.get("contrat_pdf_bytes"):
+            st.success("✅ Contrat enregistré et PDF définitif généré avec succès !")
+            st.download_button(
+                label="📥 Télécharger le Contrat PDF Définitif",
+                data=st.session_state["contrat_pdf_bytes"],
+                file_name=st.session_state.get("contrat_pdf_nom", "Contrat.pdf"),
+                mime="application/pdf",
+                use_container_width=True,
+            )
+            if st.button("🔄 Nouveau contrat", key="btn_nouveau_contrat", use_container_width=True):
+                for k in [
+                    "contrat_projet_texte", "contrat_projet_ccn", "contrat_projet_salarie",
+                    "contrat_projet_employeur", "contrat_projet_type", "contrat_projet_poste",
+                    "contrat_projet_debut", "contrat_projet_fin", "contrat_projet_dt_limite",
+                    "contrat_projet_salaire", "contrat_projet_periode_essai",
+                    "contrat_pdf_genere", "contrat_pdf_bytes", "contrat_pdf_nom"
+                ]:
+                    st.session_state.pop(k, None)
+                st.rerun()
 
     # ====================================================
     # SOUS-ONGLET 2 : SUIVI MÉDECINE DU TRAVAIL
