@@ -3808,12 +3808,37 @@ elif st.session_state['page_active'] == "📋 GESTION ADMINISTRATIVE & RH":
             date_embauche = _coercer_date_unique(st.date_input("🗓️ Date de début de contrat / mission :", key="rh_date_debut"))
         with col_c2:
             nom_employeur = st.selectbox("Sélectionner l'entreprise utilisatrice/cliente :", ["-- Choisir une entreprise --"] + list_cli, key="rh_client")
-            date_fin_m = _coercer_date_unique(st.date_input("🗓️ Date de fin de contrat / mission (Estimée) :", key="rh_date_fin_mission"))
+
+            # --------------------------------------------------------------------
+            # Durée du contrat : possibilité de choisir "Indéterminée" plutôt que
+            # de forcer une date de fin. Cochée par défaut si le type de contrat
+            # est un CDI, mais reste modifiable dans tous les cas.
+            # --------------------------------------------------------------------
+            duree_indeterminee = st.checkbox(
+                "♾️ Durée indéterminée (pas de date de fin)",
+                value=(type_ct == "CDI"),
+                key="rh_duree_indeterminee",
+            )
+            if duree_indeterminee:
+                date_fin_m = None
+                st.caption("📌 Aucune date de fin ne figurera sur le contrat (durée indéterminée).")
+            else:
+                date_fin_m = _coercer_date_unique(st.date_input("🗓️ Date de fin de contrat / mission (Estimée) :", key="rh_date_fin_mission"))
             salaire_brut = st.number_input("Rémunération brute mensuelle en € :", min_value=0.0, step=50.0)
         
         col_c3, col_c4 = st.columns(2)
         with col_c3:
             saisie_poste = st.text_input("Intitulé exact du poste de travail :", value="", placeholder="Ex: Cuisinier, Livreur...")
+            # Secteur explicitement choisi par l'utilisateur : c'est LA donnée fiable
+            # transmise à l'IA pour détecter la Convention Collective (auparavant le
+            # code tentait de récupérer un secteur depuis un tout autre onglet, ce qui
+            # ne fonctionnait jamais et faisait retomber systématiquement sur "Général" —
+            # cause principale des détections de CCN peu pertinentes).
+            secteur_ccn_contrat = st.selectbox(
+                "Secteur d'activité (utilisé pour détecter la CCN) :",
+                LISTE_SECTEURS[1:],
+                key="rh_secteur_ccn",
+            )
         with col_c4:
             periode_essai = st.number_input("Période d'essai (en jours) :", min_value=0, max_value=30, value=5)
         
@@ -3836,48 +3861,96 @@ elif st.session_state['page_active'] == "📋 GESTION ADMINISTRATIVE & RH":
                 dt_limite_gen = date_embauche + timedelta(days=90)
 
                 # --- Détection IA de la Convention Collective ---
+                # Table de correspondance (secteur -> CCN générique) utilisée en
+                # dernier recours si l'IA échoue. Les mots-clés du poste sont
+                # essayés en premier (plus précis), puis on retombe sur le secteur.
+                _ccn_par_mot_cle = {
+                    "cuisinier": "Convention Collective Nationale des Hôtels, Cafés, Restaurants — HCR (IDCC 1979)",
+                    "chef de cuisine": "Convention Collective Nationale des Hôtels, Cafés, Restaurants — HCR (IDCC 1979)",
+                    "serveur": "Convention Collective Nationale des Hôtels, Cafés, Restaurants — HCR (IDCC 1979)",
+                    "réceptionniste": "Convention Collective Nationale des Hôtels, Cafés, Restaurants — HCR (IDCC 1979)",
+                    "femme de chambre": "Convention Collective Nationale des Hôtels, Cafés, Restaurants — HCR (IDCC 1979)",
+                    "cantine": "Convention Collective Nationale de la Restauration Collective (IDCC 1266)",
+                    "collective": "Convention Collective Nationale de la Restauration Collective (IDCC 1266)",
+                    "maçon": "Convention Collective Nationale des Ouvriers du Bâtiment (IDCC 1597 / 1596 selon effectif)",
+                    "plombier": "Convention Collective Nationale des Ouvriers du Bâtiment (IDCC 1597 / 1596 selon effectif)",
+                    "électricien": "Convention Collective Nationale des Ouvriers du Bâtiment (IDCC 1597 / 1596 selon effectif)",
+                    "peintre": "Convention Collective Nationale des Ouvriers du Bâtiment (IDCC 1597 / 1596 selon effectif)",
+                    "conducteur de travaux": "Convention Collective Nationale des ETAM du Bâtiment (IDCC 2609)",
+                    "chauffeur": "Convention Collective Nationale des Transports Routiers et Activités Auxiliaires du Transport (IDCC 16)",
+                    "livreur": "Convention Collective Nationale des Transports Routiers et Activités Auxiliaires du Transport (IDCC 16)",
+                    "cariste": "Convention Collective Nationale des Transports Routiers et Activités Auxiliaires du Transport (IDCC 16)",
+                    "magasinier": "Convention Collective Nationale des Transports Routiers et Activités Auxiliaires du Transport (IDCC 16)",
+                    "développeur": "Convention Collective Nationale Syntec — Bureaux d'Études Techniques (IDCC 1486)",
+                    "ingénieur": "Convention Collective Nationale Syntec — Bureaux d'Études Techniques (IDCC 1486)",
+                    "consultant": "Convention Collective Nationale Syntec — Bureaux d'Études Techniques (IDCC 1486)",
+                    "comptable": "Convention Collective Nationale des Experts-Comptables et Commissaires aux Comptes (IDCC 787)",
+                    "assistant de direction": "Convention Collective Nationale du personnel des cabinets d'avocats ou CCN de branche selon employeur (à vérifier)",
+                    "vendeur": "Convention Collective Nationale du Commerce de Détail Non Alimentaire (IDCC 1517)",
+                    "caissier": "Convention Collective Nationale du Commerce de Détail et de Gros à Prédominance Alimentaire (IDCC 2216)",
+                    "ouvrier": "Convention Collective Nationale de la Métallurgie (IDCC selon la zone territoriale)",
+                    "technicien": "Convention Collective Nationale de la Métallurgie (IDCC selon la zone territoriale)",
+                    "opérateur de production": "Convention Collective Nationale de la Métallurgie (IDCC selon la zone territoriale)",
+                }
+                _ccn_par_secteur = {
+                    "Restauration / Hôtellerie": "Convention Collective Nationale des Hôtels, Cafés, Restaurants — HCR (IDCC 1979)",
+                    "Tertiaire / Bureau / PME": "Convention Collective Nationale Syntec — Bureaux d'Études Techniques (IDCC 1486), à confirmer selon l'activité exacte de l'entreprise",
+                    "Transport / Logistique": "Convention Collective Nationale des Transports Routiers et Activités Auxiliaires du Transport (IDCC 16)",
+                    "Bâtiment / TP": "Convention Collective Nationale des Ouvriers du Bâtiment (IDCC 1597 / 1596 selon effectif)",
+                    "Industrie / Technique": "Convention Collective Nationale de la Métallurgie (IDCC selon la zone territoriale)",
+                    "Autre": "Convention Collective Nationale applicable à l'activité principale de l'entreprise (à vérifier auprès de l'URSSAF/code APE)",
+                }
+
+                def _ccn_depuis_table_locale(poste_txt, secteur_txt):
+                    poste_lower_local = poste_txt.lower()
+                    for mot_cle, ccn_val in _ccn_par_mot_cle.items():
+                        if mot_cle in poste_lower_local:
+                            return ccn_val
+                    return _ccn_par_secteur.get(secteur_txt, _ccn_par_secteur["Autre"])
+
                 with st.spinner("🔍 Détection de la Convention Collective applicable..."):
                     try:
                         model_ccn = genai.GenerativeModel("gemini-2.5-flash")
-                        prompt_ccn = (
-                            f"Quel est le nom exact (avec l'IDCC si possible) de la Convention Collective "
-                            f"Nationale applicable en France pour le poste de '{saisie_poste}' dans le secteur "
-                            f"'{secteur_cible_tri if 'secteur_cible_tri' in dir() else 'Général'}' ?\n"
-                            f"Réponds UNIQUEMENT par le nom officiel de la convention collective, sans aucun texte supplémentaire."
-                        )
+                        prompt_ccn = f"""Tu es un expert en droit du travail français, spécialisé dans l'identification des
+Conventions Collectives Nationales (CCN).
+
+Détermine la Convention Collective Nationale la plus probable, en te basant sur le code APE/NAF
+le plus vraisemblable de l'employeur, pour :
+- Poste : "{saisie_poste}"
+- Secteur d'activité déclaré par le recruteur : "{secteur_ccn_contrat}"
+- Entreprise cliente : "{nom_employeur}"
+
+Réponds UNIQUEMENT avec le nom officiel complet de la convention collective suivi de son
+numéro IDCC entre parenthèses, au format : "Convention Collective Nationale de/des/du [nom] (IDCC [numéro])".
+Aucun texte, explication ou ponctuation supplémentaire avant ou après.
+Si un doute existe entre plusieurs conventions possibles, choisis la plus courante pour ce
+type de poste et ce secteur en France."""
                         resp_ccn = model_ccn.generate_content(prompt_ccn)
                         ccn_ia = resp_ccn.text.strip().split("\n")[0].strip()
-                        if len(ccn_ia) < 10 or len(ccn_ia) > 300:
-                            raise ValueError("Réponse CCN invalide")
+                        if len(ccn_ia) < 15 or len(ccn_ia) > 250 or "IDCC" not in ccn_ia.upper():
+                            raise ValueError("Réponse CCN non exploitable")
                     except Exception:
-                        # Fallback table de correspondance statique
-                        _ccn_table = {
-                            "cuisinier": "Convention Collective Nationale des Hôtels, Cafés, Restaurants (IDCC 1979)",
-                            "chef": "Convention Collective Nationale des Hôtels, Cafés, Restaurants (IDCC 1979)",
-                            "restauration": "Convention Collective Nationale de la Restauration Collective (IDCC 1266)",
-                            "serveur": "Convention Collective Nationale des Hôtels, Cafés, Restaurants (IDCC 1979)",
-                            "btp": "Convention Collective Nationale des ouvriers du Bâtiment (IDCC 1597)",
-                            "bâtiment": "Convention Collective Nationale des ouvriers du Bâtiment (IDCC 1597)",
-                            "maçon": "Convention Collective Nationale des ouvriers du Bâtiment (IDCC 1597)",
-                            "chauffeur": "Convention Collective Nationale des Transports Routiers (IDCC 16)",
-                            "livreur": "Convention Collective Nationale des Transports Routiers (IDCC 16)",
-                            "transport": "Convention Collective Nationale des Transports Routiers (IDCC 16)",
-                            "informatique": "Convention Collective Nationale Syntec (IDCC 1486)",
-                            "développeur": "Convention Collective Nationale Syntec (IDCC 1486)",
-                            "ingénieur": "Convention Collective Nationale Syntec (IDCC 1486)",
-                            "commerce": "Convention Collective Nationale du Commerce de Détail Non Alimentaire (IDCC 1517)",
-                            "vendeur": "Convention Collective Nationale du Commerce de Détail Non Alimentaire (IDCC 1517)",
-                        }
-                        poste_lower = saisie_poste.lower()
-                        ccn_ia = next(
-                            (v for k, v in _ccn_table.items() if k in poste_lower),
-                            "Convention Collective Nationale applicable (à préciser selon le secteur)"
-                        )
+                        ccn_ia = _ccn_depuis_table_locale(saisie_poste, secteur_ccn_contrat)
                     incrémenter_quota_ia(st.session_state.get("user_email"))
 
                 st.info(f"📋 **Convention Collective détectée par l'IA :** {ccn_ia}")
+                st.caption(
+                    "⚠️ Suggestion automatique à vérifier — elle sera modifiable à l'étape suivante "
+                    "avant génération du PDF définitif."
+                )
 
                 # --- Génération du texte brut du projet de contrat ---
+                if date_fin_m is not None:
+                    phrase_duree = (
+                        f"Le contrat débute le {date_embauche.strftime('%d/%m/%Y')} "
+                        f"et prendra fin le {date_fin_m.strftime('%d/%m/%Y')}."
+                    )
+                else:
+                    phrase_duree = (
+                        f"Le contrat débute le {date_embauche.strftime('%d/%m/%Y')} "
+                        f"et est conclu pour une durée indéterminée."
+                    )
+
                 texte_projet_contrat = f"""CONTRAT DE TRAVAIL {type_ct}
 =====================================
 
@@ -3894,7 +3967,7 @@ Le Salarié est engagé en qualité de {saisie_poste.upper()}.
 Il exercera ses fonctions sous la responsabilité de la direction de {nom_employeur}.
 
 3. DURÉE ET RÉMUNÉRATION
-Le contrat débute le {date_embauche.strftime('%d/%m/%Y')} et prendra fin le {date_fin_m.strftime('%d/%m/%Y')}.
+{phrase_duree}
 La rémunération brute mensuelle est fixée à {salaire_brut:.2f} EUR.
 
 4. PÉRIODE D'ESSAI
@@ -3944,13 +4017,30 @@ Signature de l'Employeur                    Signature du Salarié
                 "### ✏️ Étape 2 — Relecture et édition du projet de contrat",
                 help="Modifiez librement le texte ci-dessous avant de générer le PDF définitif."
             )
-            st.info(
-                f"📋 **Convention Collective pré-remplie :** {st.session_state.get('contrat_projet_ccn', '')}"
-            )
             st.caption(
                 "⚠️ Vous pouvez modifier, ajuster ou ajouter des clauses directement dans le champ ci-dessous. "
                 "Le PDF sera généré à partir de ce texte final."
             )
+
+            # --------------------------------------------------------------------
+            # Champ dédié pour corriger rapidement la Convention Collective si la
+            # suggestion IA n'est pas adaptée, sans avoir à chercher la ligne dans
+            # tout le texte. La correction est répercutée automatiquement dans le
+            # corps du contrat ET dans la donnée enregistrée en base.
+            # --------------------------------------------------------------------
+            ccn_editee = st.text_input(
+                "📋 Convention Collective Nationale applicable (modifiable) :",
+                value=st.session_state.get("contrat_projet_ccn", ""),
+                key="contrat_ccn_editable",
+                help="Corrigez ici si la suggestion de l'IA ne correspond pas à l'activité réelle de l'entreprise.",
+            )
+            if ccn_editee != st.session_state.get("contrat_projet_ccn", ""):
+                ancienne_ccn = st.session_state.get("contrat_projet_ccn", "")
+                if ancienne_ccn and ancienne_ccn in st.session_state["contrat_projet_texte"]:
+                    st.session_state["contrat_projet_texte"] = st.session_state["contrat_projet_texte"].replace(
+                        ancienne_ccn, ccn_editee
+                    )
+                st.session_state["contrat_projet_ccn"] = ccn_editee
 
             texte_edite_contrat = st.text_area(
                 label="Projet de contrat (modifiable) :",
@@ -4004,7 +4094,7 @@ Signature de l'Employeur                    Signature du Salarié
                                 type_ct_final,
                                 saisie_poste_final,
                                 date_embauche_final.strftime('%Y-%m-%d') if date_embauche_final else None,
-                                date_fin_final.strftime('%Y-%m-%d') if date_fin_final else None,
+                                date_fin_final.strftime('%Y-%m-%d') if date_fin_final else "Indéterminée",
                                 ccn_final,
                                 dt_limite_final.strftime('%Y-%m-%d') if dt_limite_final else None,
                             )
