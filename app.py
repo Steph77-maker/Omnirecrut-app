@@ -1,10 +1,7 @@
 
 import datetime
-import email
-from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-import imaplib
 import json
 import os
 import re
@@ -317,37 +314,20 @@ def creer_pdf_candidat(nom, poste, date_rdv, details):
     return chemin
 
 
-def relever_et_analyser_emails(email_user, pwd_user, imap_server):
-    if not email_user or not pwd_user or not imap_server:
-        return None
-    try:
-        mail = imaplib.IMAP4_SSL(imap_server)
-        mail.login(email_user, pwd_user)
-        mail.select("inbox")
-        status, messages = mail.search(None, "UNSEEN")
-        liste_ids = messages[0].split()
-        if not liste_ids:
-            return None
-        dernier_id = liste_ids[-1]
-        res, msg_data = mail.fetch(dernier_id, "(RFC822)")
-        for response_part in msg_data:
-            if isinstance(response_part, tuple):
-                msg = email.message_from_bytes(response_part[1])
-                for part in msg.walk():
-                    if part.get("Content-Disposition") is None:
-                        continue
-                    nom_fichier = part.get_filename()
-                    if nom_fichier and nom_fichier.lower().endswith(".pdf"):
-                        contenu_pdf = part.get_payload(decode=True)
-                        chemin_temporaire = os.path.join(".", nom_fichier)
-                        with open(chemin_temporaire, "wb") as f:
-                            f.write(contenu_pdf)
-                        mail.logout()
-                        return chemin_temporaire
-        mail.logout()
-        return None
-    except:
-        return None
+# ==============================================================================
+# ==============================================================================
+# --- RELÈVE DE CV PAR IMAP : FONCTIONNALITÉ RETIRÉE ---
+# Le bloc de relève automatique des CV en pièce jointe a été supprimé.
+# Raisons : il obligeait chaque agence cliente à confier un mot de passe
+# d'application de sa messagerie professionnelle à l'application (donnée que
+# l'on ne peut que chiffrer, jamais hacher, puisqu'elle doit être relue), pour
+# un gain de temps nul face au dépôt multi-fichiers de l'onglet Tri & Classement.
+# Streamlit ne disposant d'aucune tâche de fond, la relève ne s'exécutait de
+# toute façon que sur clic humain : la promesse de surveillance automatique de
+# la boîte mail était donc intenable par construction.
+# ⚠️ La configuration de messagerie du panneau latéral est CONSERVÉE : elle
+# reste nécessaire à l'ENVOI d'e-mails (voir envoyer_email_candidat ci-dessous).
+# ==============================================================================
 
 
 # --- FONCTION D'ENVOI D'EMAIL AUTOMATIQUE DYNAMIQUE ---
@@ -3424,8 +3404,13 @@ elif st.session_state['page_active'] == "🤝 MATCHING & OPPORTUNITÉS":
 # --- 🖥️ ONGLET : TRI & CLASSEMENT IA ---
 elif st.session_state['page_active'] == "🖥️ TRI & CLASSEMENT IA":
     st.header("🖥️ Tri de Masse & Sourcing Automatique")
-    col_gauche, col_droite = st.columns(2)
-    
+
+    # La colonne de droite (« Récupération de CV par E-mail ») a été retirée :
+    # elle imposait de confier à l'application un mot de passe de messagerie,
+    # pour un service que le dépôt de fichiers ci-dessous rend plus vite et
+    # sans risque. Le tri occupe désormais toute la largeur.
+    col_gauche = st.container()
+
     with col_gauche:
         st.subheader("📊 Classificateur de Fichiers (Excel, CSV, PDF)")
         fichiers_tri = st.file_uploader("Sélectionnez vos fichiers :", type=["xlsx", "csv", "pdf"], accept_multiple_files=True, key="uploader_masse")
@@ -3542,71 +3527,7 @@ un objet par document, avec exactement ces clés :
                     except Exception as e:
                         st.error(f"Erreur de traitement : {e}")
 
-    with col_droite:
-        st.subheader("✉️ Récupération de CV par E-mail")
-        if st.button("📥 RELEVER LES E-MAILS DE SOURCING", use_container_width=True):
-            if not email_utilisateur or not password_email: 
-                st.error("⚠️ Identifiants manquants.")
-            else:
-                fichier_recupere = relever_et_analyser_emails(email_utilisateur, password_email, serveur_imap)
-                if fichier_recupere:
-                    st.success(f"📎 Nouveau CV PDF récupéré : {os.path.basename(fichier_recupere)}")
-                    # Auto-analyse en PRÉVISUALISATION uniquement : ce CV n'a pas été choisi
-                    # individuellement par un humain (contrairement à l'upload manuel), donc
-                    # aucune écriture en base tant qu'il n'a pas été validé ci-dessous.
-                    try:
-                        reader_mail = PdfReader(fichier_recupere)
-                        texte_cv_mail = "".join([p.extract_text() for p in reader_mail.pages if p.extract_text()])
-                        with st.spinner("Analyse automatique en aperçu..."):
-                            apercu = analyser_cv_preview(texte_cv_mail)
-                        st.session_state["apercu_cv_mail"] = apercu
-                        st.session_state["texte_cv_mail"] = texte_cv_mail
-                    except Exception as e:
-                        st.error(f"Erreur lors de l'analyse de l'aperçu : {e}")
-                else: 
-                    st.info("📬 Aucun nouveau message non lu avec pièce jointe PDF trouvé.")
-
-        if st.session_state.get("apercu_cv_mail"):
-            apercu = st.session_state["apercu_cv_mail"]
-            st.markdown("---")
-            st.markdown(f"##### 🧠 Aperçu — {apercu.get('nom_complet', 'Candidat')} *(non enregistré, à valider)*")
-            st.caption(f"Adéquation estimée : {apercu.get('pourcentage_adequation', 0)}% — Métiers cibles : {', '.join(apercu.get('metiers_cibles', []))}")
-            with st.expander("Voir le compte-rendu complet avant validation"):
-                st.markdown(apercu.get("compte_rendu", ""))
-
-            secteur_cv_mail = st.selectbox("Secteur d'affectation :", LISTE_SECTEURS[1:], key="secteur_cv_mail")
-            col_valid_mail, col_reject_mail = st.columns(2)
-            with col_valid_mail:
-                if st.button("✅ Confirmer l'ajout au vivier", key="btn_confirmer_cv_mail", use_container_width=True, type="primary"):
-                    try:
-                        resultat_mail = _save_candidate_to_sqlite(
-                            **{
-                                "nom_complet": apercu.get("nom_complet", "Inconnu"),
-                                "diplomes": apercu.get("diplomes", []),
-                                "hard_skills": apercu.get("hard_skills", []),
-                                "soft_skills_transferables": apercu.get("soft_skills_transferables", []),
-                                "traits_dominants": apercu.get("traits_dominants", []),
-                                "indices_parcours_pro": apercu.get("indices_parcours_pro", ""),
-                                "indices_centres_interet": apercu.get("indices_centres_interet", ""),
-                                "coherence_projet_pro": apercu.get("coherence_projet_pro", ""),
-                                "metiers_cibles": apercu.get("metiers_cibles", []),
-                                "pourcentage_adequation": apercu.get("pourcentage_adequation", 0),
-                                "compte_rendu": apercu.get("compte_rendu", ""),
-                                "secteur_metier": secteur_cv_mail,
-                                "cv_texte": st.session_state.get("texte_cv_mail", ""),
-                            }
-                        )
-                        st.success(resultat_mail.get("message", "Candidat ajouté."))
-                        del st.session_state["apercu_cv_mail"]
-                        st.session_state.pop("texte_cv_mail", None)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Erreur lors de l'enregistrement : {e}")
-            with col_reject_mail:
-                if st.button("❌ Ignorer ce CV", key="btn_rejeter_cv_mail", use_container_width=True):
-                    del st.session_state["apercu_cv_mail"]
-                    st.session_state.pop("texte_cv_mail", None)
-                    st.rerun()# --- 🤝 ONGLET : MATCHING & OPPORTUNITÉS (COMPLÉTÉ AVEC QUOTAS IA) ---
+# --- 🤝 ONGLET : MATCHING & OPPORTUNITÉS (COMPLÉTÉ AVEC QUOTAS IA) ---
 elif st.session_state['page_active'] == "🤝 MATCHING & OPPORTUNITÉS":
     st.header("🎯 Intelligence de Matching & Opportunités")
     tab_classique, tab_inverse = st.tabs(["📋 Matching Classique (Besoins vs Candidats)", "🚀 Matching Inversé (Placement Proactif)"])
