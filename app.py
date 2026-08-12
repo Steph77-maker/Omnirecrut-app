@@ -1213,6 +1213,19 @@ def analyser_cv_avec_agent(texte_cv: str, secteur_metier: str, max_tentatives: i
 
 
 # ==============================================================================
+# --- UTILITAIRE GLOBAL : extraction d'adresse e-mail depuis un texte libre ---
+# Défini ici (niveau module) pour être disponible dans TOUS les onglets,
+# notamment le Tableau de Bord qui l'appelle avant l'onglet Vivier où il
+# était précédemment redéfini en doublon (ce qui causait un NameError au
+# chargement du Dashboard si le bloc Vivier n'avait pas encore été évalué).
+# ==============================================================================
+def extraire_email(texte: str) -> str | None:
+    """Renvoie la première adresse e-mail trouvée dans `texte`, ou None."""
+    emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', str(texte or ""))
+    return emails[0] if emails else None
+
+
+# ==============================================================================
 # --- VEILLE PROACTIVE : besoins clients persistés + alertes de matching ---
 # Un besoin client est désormais enregistré en base (au lieu d'être éphémère).
 # Dès qu'un nouveau candidat est ajouté au vivier (via l'agent) OU qu'un nouveau
@@ -1484,6 +1497,100 @@ def _charger_clients(_conn, org_id):
         " priorite, notes FROM clients",
         _conn,
     )
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _charger_kpi_dashboard(_conn, org_id) -> dict:
+    """Agrège les KPI globaux nécessaires à l'Agent IA de pilotage.
+    Mis en cache 60s — ces requêtes légères n'ont pas besoin d'être rejouées
+    à chaque rerun ; le cache est invalidé dès qu'une écriture appelle .clear()."""
+    kpi = {}
+    _c = _conn.cursor()
+    try:
+        _c.execute("SELECT COUNT(*), SUM(CASE WHEN statut LIKE '%Disponible%' THEN 1 ELSE 0 END), SUM(CASE WHEN statut LIKE '%mission%' THEN 1 ELSE 0 END) FROM candidats")
+        row = _c.fetchone()
+        kpi["nb_candidats_total"] = int(row[0] or 0)
+        kpi["nb_candidats_disponibles"] = int(row[1] or 0)
+        kpi["nb_candidats_en_mission"] = int(row[2] or 0)
+    except Exception:
+        kpi.update({"nb_candidats_total": 0, "nb_candidats_disponibles": 0, "nb_candidats_en_mission": 0})
+
+    try:
+        _c.execute("SELECT COUNT(*) FROM clients")
+        kpi["nb_clients"] = int(_c.fetchone()[0] or 0)
+    except Exception:
+        kpi["nb_clients"] = 0
+
+    try:
+        _c.execute("SELECT COUNT(*) FROM besoins_clients WHERE statut = 'Ouvert'")
+        kpi["nb_besoins_ouverts"] = int(_c.fetchone()[0] or 0)
+    except Exception:
+        kpi["nb_besoins_ouverts"] = 0
+
+    try:
+        _c.execute("SELECT COUNT(*) FROM contrats")
+        kpi["nb_contrats_actifs"] = int(_c.fetchone()[0] or 0)
+    except Exception:
+        kpi["nb_contrats_actifs"] = 0
+
+    try:
+        _c.execute("SELECT COUNT(*) FROM alertes_matching WHERE lue = 0")
+        kpi["nb_alertes_non_lues"] = int(_c.fetchone()[0] or 0)
+    except Exception:
+        kpi["nb_alertes_non_lues"] = 0
+
+    try:
+        seuil = (datetime.date.today() - datetime.timedelta(days=30)).isoformat()
+        _c.execute("SELECT COUNT(*) FROM candidats WHERE statut = 'Disponible' AND (date_ajout IS NULL OR date_ajout <= %s)", (seuil,))
+        kpi["nb_candidats_dormants"] = int(_c.fetchone()[0] or 0)
+    except Exception:
+        kpi["nb_candidats_dormants"] = 0
+
+    try:
+        limite_med = (datetime.date.today() + datetime.timedelta(days=15)).isoformat()
+        _c.execute("SELECT COUNT(*) FROM contrats WHERE date_limite_medecine BETWEEN %s AND %s", (datetime.date.today().isoformat(), limite_med))
+        kpi["nb_visites_med_urgentes"] = int(_c.fetchone()[0] or 0)
+    except Exception:
+        kpi["nb_visites_med_urgentes"] = 0
+
+    try:
+        limite_fin = (datetime.date.today() + datetime.timedelta(days=7)).isoformat()
+        _c.execute("SELECT COUNT(*) FROM contrats WHERE date_fin BETWEEN %s AND %s", (datetime.date.today().isoformat(), limite_fin))
+        kpi["nb_fins_contrat_7j"] = int(_c.fetchone()[0] or 0)
+    except Exception:
+        kpi["nb_fins_contrat_7j"] = 0
+
+    return kpi
+
+
+def generer_synthese_ia_pilotage(kpi: dict) -> str:
+    """Appelle Gemini pour produire une synthèse stratégique + plan d'action du jour
+    à partir des KPI globaux. AUCUNE écriture en base — lecture seule.
+    Déclenché uniquement sur clic utilisateur (bouton explicite)."""
+    try:
+        model_pilot = genai.GenerativeModel("gemini-2.5-flash")
+        prompt = f"""Tu es un assistant de pilotage RH pour un cabinet de recrutement ou une agence d'intérim.
+Voici les indicateurs du jour extraits de la base de données (données réelles) :
+
+- Candidats dans le vivier : {kpi['nb_candidats_total']} (dont {kpi['nb_candidats_disponibles']} disponibles, {kpi['nb_candidats_en_mission']} en mission)
+- Clients actifs dans le portefeuille : {kpi['nb_clients']}
+- Besoins clients ouverts (non pourvus) : {kpi['nb_besoins_ouverts']}
+- Contrats en cours enregistrés : {kpi['nb_contrats_actifs']}
+- Alertes de matching non lues : {kpi['nb_alertes_non_lues']}
+- Candidats dormants (disponibles depuis > 30 jours) : {kpi['nb_candidats_dormants']}
+- Visites médicales à planifier sous 15 jours : {kpi['nb_visites_med_urgentes']}
+- Fins de contrat dans les 7 prochains jours : {kpi['nb_fins_contrat_7j']}
+
+Sur la base de ces données, produis :
+1. **Synthèse stratégique** (3-4 phrases) : état global de l'activité, points de tension, opportunités.
+2. **Plan d'action du jour** : liste de 3 à 5 actions prioritaires concrètes et actionnables, classées par urgence.
+3. **Alerte(s) RH critique(s)** : signale tout indicateur qui dépasse un seuil d'alerte (ex: beaucoup de candidats dormants, alertes non lues, fins de contrat imminentes).
+
+Sois direct, professionnel, sans formule creuse. Formate ta réponse en Markdown."""
+        response = model_pilot.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"⚠️ Erreur lors de la génération de la synthèse IA : {e}"
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -2026,11 +2133,89 @@ index_actuel = options_menu.index(st.session_state['page_active']) if st.session
 menu = st.sidebar.radio("MENU PRINCIPAL", options_menu, index=index_actuel)
 st.session_state['page_active'] = menu
 
-# --- ONGLET 0 : TABLEAU DE BORD (digest quotidien + relance dormants) ---
+# --- ONGLET 0 : TABLEAU DE BORD (digest quotidien + Agent IA de pilotage) ---
 if st.session_state['page_active'] == "🧭 TABLEAU DE BORD":
     st.header("🧭 Tableau de Bord — Synthèse Quotidienne")
     st.caption("Généré à partir des données existantes — aucune action n'est prise automatiquement, tout reste à valider par vous.")
 
+    # --- KPI GLOBAUX (chargés en cache 60s, 0 appel IA) ---
+    try:
+        kpi_global = _charger_kpi_dashboard(conn, org_courante())
+    except Exception:
+        kpi_global = {
+            "nb_candidats_total": 0, "nb_candidats_disponibles": 0, "nb_candidats_en_mission": 0,
+            "nb_clients": 0, "nb_besoins_ouverts": 0, "nb_contrats_actifs": 0,
+            "nb_alertes_non_lues": 0, "nb_candidats_dormants": 0,
+            "nb_visites_med_urgentes": 0, "nb_fins_contrat_7j": 0,
+        }
+
+    st.markdown("### 📊 Vue d'ensemble de l'activité")
+    kpi_c1, kpi_c2, kpi_c3, kpi_c4 = st.columns(4)
+    with kpi_c1:
+        st.metric("👤 Candidats vivier", kpi_global["nb_candidats_total"],
+                  delta=f"{kpi_global['nb_candidats_disponibles']} dispo / {kpi_global['nb_candidats_en_mission']} en mission",
+                  delta_color="off")
+    with kpi_c2:
+        st.metric("🏢 Clients portefeuille", kpi_global["nb_clients"])
+    with kpi_c3:
+        st.metric("🎯 Besoins ouverts", kpi_global["nb_besoins_ouverts"],
+                  delta="non pourvus", delta_color="inverse" if kpi_global["nb_besoins_ouverts"] > 0 else "off")
+    with kpi_c4:
+        st.metric("📋 Contrats en cours", kpi_global["nb_contrats_actifs"])
+
+    kpi_c5, kpi_c6, kpi_c7, _ = st.columns(4)
+    with kpi_c5:
+        st.metric("🔔 Alertes non lues", kpi_global["nb_alertes_non_lues"],
+                  delta="⚠️ À traiter" if kpi_global["nb_alertes_non_lues"] > 0 else None,
+                  delta_color="inverse")
+    with kpi_c6:
+        st.metric("💤 Candidats dormants", kpi_global["nb_candidats_dormants"],
+                  delta="> 30j sans activité" if kpi_global["nb_candidats_dormants"] > 0 else None,
+                  delta_color="inverse")
+    with kpi_c7:
+        st.metric("⏳ Fins contrat < 7j", kpi_global["nb_fins_contrat_7j"],
+                  delta="Urgent" if kpi_global["nb_fins_contrat_7j"] > 0 else None,
+                  delta_color="inverse")
+
+    st.markdown("---")
+
+    # --- AGENT IA DE PILOTAGE (déclenchement sur clic explicite) ---
+    st.markdown("### 🤖 Agent IA — Synthèse stratégique & Plan d'action du jour")
+    st.caption("L'Agent IA analyse les indicateurs ci-dessus et génère un plan d'action personnalisé. Aucune action n'est déclenchée automatiquement.")
+
+    col_ia_btn, col_ia_info = st.columns([1, 3])
+    with col_ia_btn:
+        btn_synthese = st.button("✨ Générer la synthèse IA", type="primary", use_container_width=True,
+                                  key="btn_agent_pilotage",
+                                  help="Analyse les KPI globaux et produit un plan d'action du jour (1 requête IA).")
+    with col_ia_info:
+        st.caption("💡 Déclenche 1 requête Gemini pour synthétiser l'état de votre activité et identifier les priorités du jour.")
+
+    if btn_synthese:
+        if not peut_utiliser_ia(st.session_state.get("user_email")):
+            st.error("⚠️ Quota IA mensuel atteint. Impossible de générer la synthèse.")
+        else:
+            with st.spinner("🧠 L'Agent IA analyse vos données et rédige votre plan d'action..."):
+                synthese = generer_synthese_ia_pilotage(kpi_global)
+            incrémenter_quota_ia(st.session_state.get("user_email"))
+            st.session_state["_synthese_pilotage"] = synthese
+
+    if st.session_state.get("_synthese_pilotage"):
+        st.markdown(
+            f"""<div style="background-color:#1e2a3a; border-left:4px solid #ffb703;
+                            padding:20px; border-radius:8px; color:#e2e8f0;
+                            line-height:1.7; font-size:14px; white-space:pre-wrap;">
+                {st.session_state['_synthese_pilotage']}
+            </div>""",
+            unsafe_allow_html=True,
+        )
+        if st.button("🔄 Régénérer", key="btn_regen_synthese"):
+            st.session_state.pop("_synthese_pilotage", None)
+            st.rerun()
+
+    st.markdown("---")
+
+    # --- ALERTES RH DÉTAILLÉES (digest déterministe, 0 appel IA) ---
     digest = generer_digest_quotidien(org_courante())
 
     col_d1, col_d2, col_d3 = st.columns(3)
@@ -2280,10 +2465,7 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
             if not df_vivier.empty:
                 st.success(f"📊 {len(df_vivier)} profil(s) trouvé(s) pour le secteur : {secteur_filtre}")
                 
-                def extraire_email(texte):
-                    emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', str(texte))
-                    return emails[0] if emails else None
-
+                # extraire_email est définie au niveau module (avant le bloc Tableau de Bord)
                 df_vivier["Email_Brut"] = df_vivier["Coordonnées / Compétences"].apply(extraire_email)
                 df_vivier["Email"] = df_vivier["Email_Brut"].apply(lambda x: f"mailto:{x}" if x else None)
                 # Nettoyage robuste et extraction du vrai score global
