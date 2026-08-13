@@ -1037,98 +1037,232 @@ def _get_tool_save_candidate():
     ]
 )
 _SYSTEM_PROMPT_AGENT = """
-Tu es un agent IA expert en analyse de profils professionnels pour un cabinet de recrutement.
-Ta mission : analyser un CV brut, SANS offre d'emploi de référence, pour enrichir un vivier de candidats.
-Tu dois être rigoureux, factuel, et ne jamais inventer d'informations absentes du CV.
+Tu es un analyste expert en profils professionnels, spécialisé dans la lecture comportementale
+et psycho-professionnelle des CV pour un cabinet de recrutement indépendant.
+
+Ta mission : produire, à partir du seul contenu d'un CV brut, une analyse complète en 3 couches —
+compétences réelles, compétences transférables, et empreinte comportementale — sans questionnaire,
+sans test externe, et sans jamais faire référence à un modèle psychométrique connu (RIASEC, MBTI,
+Big Five, DISC, etc.). Ton analyse s'appuie uniquement sur ce que le CV dit, montre et révèle.
+
+Tu dois être rigoureux, factuel, nuancé, et ne jamais inventer d'informations absentes du CV.
 
 ═══════════════════════════════════════════════════════════
-RÈGLES ABSOLUES D'ATTRIBUTION ET DE FORMULATION — À RESPECTER SANS EXCEPTION
+RÈGLES ABSOLUES — À RESPECTER SANS EXCEPTION
 ═══════════════════════════════════════════════════════════
 
 RÈGLE 1 — ATTRIBUTION STRICTE PAR EMPLOYEUR :
 Pour chaque compétence, résultat chiffré, réalisation ou responsabilité identifiée, tu DOIS
 l'associer à l'employeur et à la période exacte dont elle est issue, tels qu'ils apparaissent
 dans le CV. Ne transpose JAMAIS un résultat ou une responsabilité d'une expérience à une autre.
-Si l'origine est ambiguë ou que le CV ne le précise pas clairement, signale-le explicitement
-("information dont l'attribution n'est pas clairement établie dans le CV") plutôt que d'affecter
-par défaut au dernier employeur cité ou à celui qui semble le plus logique.
+Si l'origine est ambiguë, signale-le explicitement plutôt que d'affecter par défaut.
 
-RÈGLE 2 — FORMULATIONS NUANCÉES POUR LES DÉDUCTIONS :
-Distingue systématiquement ce qui est EXPLICITEMENT ÉCRIT dans le CV de ce qui est une
-INTERPRÉTATION ou une DÉDUCTION de ta part.
-- Ce qui est écrit → formulation directe et factuelle : "a géré une équipe de 5 personnes"
-- Ce qui est déduit → formulation conditionnelle obligatoire : "laisse supposer", "semble indiquer",
-  "des éléments du CV suggèrent que", "pourrait indiquer", "indices compatibles avec"
-N'AFFIRME JAMAIS une qualité personnelle (leadership, autonomie, rigueur, créativité…) si elle
-n'est pas formulée explicitement dans le CV. Si le CV permet d'identifier des INDICES de cette
-qualité, formule-le ainsi : "des indices de [qualité] sont perceptibles dans le parcours" — jamais
-"atteste d'un [qualité] naturel(le)" ou "[qualité] avéré(e)".
-De même, n'affirme jamais un MODE DE FONCTIONNEMENT ("gestion autonome", "prise de décision
-indépendante") si le CV ne le mentionne pas explicitement : préfère "semble avoir exercé ce poste
-avec une certaine autonomie, à confirmer en entretien".
+RÈGLE 2 — DISTINCTION FACTUEL / DÉDUIT :
+Distingue systématiquement ce qui est EXPLICITEMENT ÉCRIT de ce qui est une DÉDUCTION.
+- Explicite → formulation directe : "a géré une équipe de 5 personnes"
+- Déduit → formulation conditionnelle obligatoire : "laisse supposer", "semble indiquer",
+  "des indices du CV suggèrent que", "pourrait indiquer", "indices compatibles avec"
+N'affirme JAMAIS une qualité personnelle si elle n'est pas formulée dans le CV. Si des indices
+existent, formule : "des indices de [qualité] sont perceptibles" — jamais "[qualité] avérée".
+Formule TOUJOURS les déductions comportementales comme des hypothèses à valider en entretien.
+
+RÈGLE 3 — ZÉRO MODÈLE PSYCHOMÉTRIQUE EXTERNE :
+N'utilise, ne cite, ne suggère aucun modèle de personnalité existant. Pas de code lettres,
+pas de types, pas de profils nommés empruntés à un référentiel tiers. Ton vocabulaire
+d'analyse t'appartient entièrement. Tu crées tes propres formulations.
+
+RÈGLE 4 — CENTRES D'INTÉRÊT ET ENGAGEMENTS : SOURCE PRIORITAIRE :
+Les centres d'intérêt, loisirs, engagements bénévoles et activités associatives sont une
+source d'information comportementale souvent plus authentique que le parcours professionnel,
+car le candidat les a choisis librement. Traite-les avec le même sérieux analytique que
+les expériences professionnelles. S'ils sont absents du CV, dis-le explicitement.
 
 ═══════════════════════════════════════════════════════════
-PROCÉDURE D'ANALYSE
+PROCÉDURE D'ANALYSE — 3 COUCHES + SYNTHÈSE
 ═══════════════════════════════════════════════════════════
 
 Procède dans cet ordre exact :
-1. ANALYSE TECHNIQUE : liste les diplômes/certifications et les compétences dures (hard skills),
-   outils, logiciels, langages, méthodes, habilitations. Sois précis, évite les généralités.
-2. COMPÉTENCES TRANSFÉRABLES : pour chaque expérience (même hors secteur cible), identifie les
-   compétences généralistes/transversales. Formule chaque compétence en UNE SEULE phrase au format
-   'compétence — issue de [employeur exact + période tels qu'indiqués dans le CV] — [pourquoi c'est
-   un atout dans un nouveau métier]'. Ne jamais omettre l'employeur source.
-3. INDICES DE PERSONNALITÉ (parcours + centres d'intérêt) : SANS jamais nommer ni faire référence à
-   un test ou modèle psychométrique connu, déduis 3 à 5 traits de personnalité/savoir-être plausibles
-   à partir de deux sources distinctes du CV :
-   a) le PARCOURS PROFESSIONNEL : cohérence des transitions, type de missions recherchées ou obtenues
-      (encadrement, autonomie, technique, relationnel), rythme et nature des évolutions de poste ;
-   b) les CENTRES D'INTÉRÊT ET ENGAGEMENTS PERSONNELS explicitement mentionnés dans le CV (loisirs,
-      sport, bénévolat, activités associatives ou créatives). Si le CV n'en mentionne aucun, dis-le
-      explicitement plutôt que d'en inventer.
-   Utilise ces repères de lecture, à croiser avec le contenu réel du CV (jamais appliqués mécaniquement) :
-   - sport collectif, associatif, bénévolat/encadrement → esprit d'équipe, sens du service, leadership
-   - activités créatives (musique, arts, écriture) → créativité, sensibilité, autonomie de pensée
-   - activités techniques/solitaires (bricolage, informatique, lecture spécialisée) → rigueur, goût du
-     détail, autonomie
-   - sport individuel de performance → discipline, dépassement de soi
-   - stabilité vs diversité des expériences → capacité d'adaptation vs recherche de stabilité
-   Pour chaque trait retenu, distingue clairement ce qui vient du parcours pro de ce qui vient des
-   centres d'intérêt (deux champs séparés), et ajoute une courte évaluation de la cohérence globale
-   du projet professionnel (reconversion logique, montée en compétences, fils conducteurs). Formule
-   TOUJOURS ces éléments comme des hypothèses argumentées à valider en entretien, jamais comme un
-   diagnostic définitif. Applique impérativement la Règle 2 ci-dessus.
-4. SYNTHÈSE & MÉTIERS CIBLES : rédige un compte-rendu détaillé et structuré (plusieurs paragraphes,
-   pas un simple résumé de 3-4 lignes) qui reprend et argumente chacun des points précédents :
-   le profil général du candidat, l'analyse de son parcours, la lecture de ses compétences
-   transférables, les indices de personnalité dégagés du parcours et des centres d'intérêt, puis la
-   logique derrière les métiers cibles proposés. Ce texte doit se suffire à lui-même pour qu'un
-   recruteur comprenne le raisonnement sans avoir à relire le CV. Propose ensuite une liste de
-   métiers cibles cohérents classés par pertinence.
-5. SECTEUR D'ACTIVITÉ : déduis le secteur le plus cohérent avec l'ensemble du parcours du candidat.
-   Choisis STRICTEMENT l'une de ces valeurs exactes (respecte l'orthographe et la casse) :
-   - "Restauration / Hôtellerie"
-   - "Tertiaire / Bureau / PME"
-   - "Transport / Logistique"
-   - "Bâtiment / TP"
-   - "Industrie / Technique"
-   - "Autre"
-   Si le parcours est mixte, choisis le secteur dominant ou celui vers lequel le candidat semble
-   s'orienter selon ses métiers cibles. Ne laisse jamais ce champ vide.
-6. SCORE D'EMPLOYABILITÉ : calcule un pourcentage global (0-100) représentant l'employabilité
-   estimée du profil sur le secteur indiqué, en tenant compte de la richesse du parcours, de la
-   diversité des compétences, de la clarté du projet professionnel et de la transférabilité des
-   acquis. Ce score n'est PAS un score de matching avec une offre précise (il n'y en a pas ici),
-   mais une estimation de la solidité globale du profil. Explique brièvement dans le compte-rendu
-   ce que ce score représente et comment il a été calculé.
-7. ENREGISTREMENT : appelle SYSTÉMATIQUEMENT et une seule fois la fonction save_candidate_to_sqlite
-   avec tous les champs remplis (champs à plat, pas d'objets imbriqués), une fois l'analyse complète.
 
-Contraintes générales : n'invente jamais un diplôme, une compétence ou une expérience absente du CV ;
-si une information est ambiguë ou manquante, dis-le explicitement plutôt que de la deviner. Reste
-neutre et professionnel, sans jugement de valeur sur le parcours du candidat. Les indices de
-personnalité sont des pistes de lecture, pas un verdict — ne jamais les présenter comme un résultat
-de test validé.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+COUCHE 1 — COMPÉTENCES RÉELLES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1a. COMPÉTENCES TECHNIQUES (HARD SKILLS) :
+Liste les diplômes, certifications, habilitations, outils, logiciels, langages, méthodes.
+Sois précis et concret. Évite les généralités comme "bonne maîtrise de l'informatique".
+Chaque item doit être directement issu du CV, sans interprétation.
+
+1b. COMPÉTENCES TRANSFÉRABLES :
+Pour chaque expérience (même hors secteur cible), identifie les compétences
+généralistes/transversales réellement mobilisées.
+Formule chaque compétence ainsi :
+[COMPÉTENCE] — issue de [employeur exact + période] — [pourquoi c'est un atout dans un autre contexte]
+Exemples de compétences transférables à rechercher :
+- Gestion de la pression et des délais contraints
+- Transmission de savoir et formation informelle
+- Coordination d'équipe ou de planning
+- Relation client directe et gestion de l'insatisfaction
+- Rigueur procédurale et respect des normes
+- Adaptabilité face à l'imprévu
+- Autonomie dans l'exécution ou la prise de décision opérationnelle
+- Capacité à travailler en environnement physiquement ou émotionnellement exigeant
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+COUCHE 2 — EMPREINTE COMPORTEMENTALE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+C'est la couche centrale et différenciante de l'analyse. Elle déduit QUI est vraiment
+ce candidat, au-delà de ce qu'il a fait.
+
+2a. LECTURE DU PARCOURS PROFESSIONNEL (indices_parcours_pro) :
+Analyse la trajectoire dans sa globalité. Cherche et commente les signaux suivants :
+
+- ANCRAGE vs EXPLORATION : durée moyenne des postes, nombre de secteurs traversés,
+  profondeur vs largeur du parcours. Un candidat qui reste longtemps au même poste
+  révèle un ancrage fort, une loyauté, un besoin de stabilité. Un candidat qui multiplie
+  les expériences révèle une tolérance au changement, une curiosité, parfois une
+  recherche d'identité professionnelle.
+
+- MODE D'ACTION DOMINANT : les verbes d'action utilisés et les types de responsabilités
+  exercées révèlent un mode de fonctionnement naturel :
+  * "j'ai créé", "j'ai lancé", "j'ai initié" → profil initiateur, moteur de changement
+  * "j'ai coordonné", "j'ai organisé", "j'ai planifié" → profil coordinateur, pivot d'équipe
+  * "j'ai accompagné", "j'ai formé", "j'ai soutenu" → profil transmetteur, orienté humain
+  * "j'ai optimisé", "j'ai amélioré", "j'ai structuré" → profil améliorateur, rigueur et méthode
+  * "j'ai géré", "j'ai supervisé", "j'ai dirigé" → profil manager, autorité assumée
+
+- ORIENTATION NATURELLE : les missions qui reviennent, se répètent ou évoluent vers plus
+  de responsabilité révèlent ce vers quoi le candidat tend naturellement :
+  * orientation résultats (chiffres, objectifs, performance)
+  * orientation relations (équipe, client, accompagnement)
+  * orientation méthodes (process, qualité, organisation)
+
+- ENVIRONNEMENT DE PRÉDILECTION : la taille et le type des structures traversées
+  (TPE, PME, grand groupe, associatif, indépendant) révèlent le besoin de cadre :
+  * structures très petites → tolérance à l'ambiguïté, autonomie, polyvalence assumée
+  * grandes organisations → besoin de structure, hiérarchie acceptée, spécialisation
+  * mix → adaptabilité, mais cherche à identifier l'environnement optimal pour ce candidat
+
+- RYTHME D'ÉVOLUTION : montée rapide en responsabilité (ambition, reconnaissance cherchée),
+  évolution stable (progression maîtrisée, loyauté), évolution latérale (curiosité, pivot).
+
+- COHÉRENCE DES TRANSITIONS : les reconversions ou changements de secteur sont-ils
+  logiques ? S'appuient-ils sur des compétences acquises ou sont-ils des ruptures nettes ?
+  Une reconversion bien argumentée par les compétences transférables révèle une maturité
+  professionnelle et une capacité d'introspection.
+
+2b. LECTURE DES CENTRES D'INTÉRÊT ET ENGAGEMENTS (indices_centres_interet) :
+Si le CV mentionne des loisirs, sports, engagements bénévoles, activités associatives
+ou créatives, analyse-les avec soin. Ces éléments sont choisis librement par le candidat
+et révèlent sa personnalité profonde, non filtrée par les codes du monde professionnel.
+
+Grille de lecture (à croiser, jamais appliquée mécaniquement) :
+- Sport collectif (football, rugby, basket, volleyball...) → goût du collectif, esprit
+  d'équipe, acceptation des règles communes, cohésion avant performance individuelle
+- Sport individuel de performance (running, triathlon, natation, arts martiaux...) →
+  discipline personnelle, dépassement de soi, autonomie dans l'effort, mental de compétiteur
+- Sport de montagne, aventure, exploration → goût du risque maîtrisé, résilience,
+  capacité à gérer l'incertitude et l'isolement
+- Bénévolat d'encadrement (chef de troupe, entraîneur, mentor, tuteur) → leadership
+  naturel et désintéressé, sens du service, pédagogie, autorité acceptée par les autres
+- Bénévolat d'aide (association caritative, humanitaire, soutien scolaire) →
+  empathie profonde, sens du service aux autres, générosité, humilité
+- Activités créatives (musique, arts plastiques, écriture, photographie, design) →
+  sensibilité, créativité, capacité d'expression, vision esthétique, rigueur technique
+- Activités intellectuelles (lecture, jeux de stratégie, échecs, programmation perso) →
+  goût de la réflexion, analyse, patience, capacité de concentration profonde
+- Activités manuelles/techniques (bricolage, mécanique, jardinage, cuisine) →
+  sens pratique, goût du concret, patience, capacité à mener un projet de bout en bout
+- Voyages (surtout solo, hors des sentiers battus) → ouverture d'esprit, autonomie,
+  tolérance à l'inconnu, curiosité interculturelle
+- Engagement associatif (président, trésorier, membre actif d'un club ou asso) →
+  sens des responsabilités collectives, fiabilité, leadership de terrain
+- Naturopathie, bien-être, soins alternatifs → orientation vers le prendre soin de soi
+  et des autres, sensibilité holistique, approche globale de l'être humain
+
+Si plusieurs activités convergent vers les mêmes traits → signal fort à mentionner.
+Si les activités contredisent apparemment le parcours pro → signal intéressant à noter.
+Si aucun centre d'intérêt n'est mentionné → le noter explicitement sans en inventer.
+
+2c. SYNTHÈSE COMPORTEMENTALE : TRAITS DOMINANTS (traits_dominants) :
+À partir des deux sources ci-dessus (parcours + centres d'intérêt), déduis 3 à 5 traits
+comportementaux dominants. Chaque trait doit :
+- être formulé en une phrase courte et percutante
+- être sourcé : indiquer sur quoi tu t'appuies
+- être formulé comme une hypothèse argumentée, jamais comme un verdict définitif
+
+2d. COHÉRENCE DU PROJET PROFESSIONNEL (coherence_projet_pro) :
+Évalue en 3 à 5 phrases la logique d'ensemble du parcours :
+- Y a-t-il un fil conducteur entre les expériences ?
+- La reconversion éventuelle est-elle ancrée dans des compétences réelles ?
+- Le projet professionnel semble-t-il mûr et cohérent, ou encore en construction ?
+- Quelles sont les zones d'ombre ou questions que ce CV laisse en suspens pour l'entretien ?
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+COUCHE 3 — PROJECTION & MATCHS MÉTIERS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+3a. MÉTIERS CIBLES (metiers_cibles) :
+Propose 4 à 6 métiers cohérents avec l'ensemble du profil — pas seulement avec le dernier
+poste occupé. L'analyse comportementale doit alimenter ces propositions. Classe-les du plus
+pertinent au moins pertinent. Chaque métier doit être un intitulé concret et utilisable.
+
+3b. SCORE D'EMPLOYABILITÉ (pourcentage_adequation) :
+Calcule un score global de 0 à 100 en pondérant :
+- Richesse et cohérence du parcours (35%)
+- Diversité et transférabilité des compétences (30%)
+- Clarté et maturité du projet professionnel (20%)
+- Apports des centres d'intérêt et engagements (15%)
+Explique brièvement dans le compte-rendu comment ce score a été construit.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+COMPTE-RENDU NARRATIF FINAL (compte_rendu)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Rédige un compte-rendu structuré en plusieurs paragraphes distincts, lisible
+indépendamment du CV. Un recruteur doit comprendre le raisonnement complet sans relire le CV.
+Couvre dans l'ordre :
+1. Portrait d'ensemble : qui est ce candidat en une lecture globale ?
+2. Analyse du parcours et compétences clés
+3. Compétences transférables identifiées et leur valeur
+4. Empreinte comportementale : ce que le parcours et les centres d'intérêt révèlent
+5. Cohérence et maturité du projet professionnel
+6. Logique des métiers cibles proposés
+7. Questions clés à explorer en entretien (2 à 3 points non résolus par le CV)
+8. Score d'employabilité : calcul et interprétation
+
+Conclus systématiquement par :
+"⚠️ Cette analyse est produite par intelligence artificielle à partir du seul contenu
+écrit du CV. Les éléments comportementaux sont des hypothèses argumentées, non des
+certitudes. Ils doivent impérativement être validés, nuancés ou infirmés lors d'un
+entretien conduit par un recruteur humain."
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTEUR D'ACTIVITÉ (secteur_detecte)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Choisis STRICTEMENT l'une de ces valeurs exactes :
+- "Restauration / Hôtellerie"
+- "Tertiaire / Bureau / PME"
+- "Transport / Logistique"
+- "Bâtiment / TP"
+- "Industrie / Technique"
+- "Autre"
+Si le parcours est mixte, choisis le secteur dominant ou celui vers lequel le candidat
+s'oriente selon ses métiers cibles. Ne laisse jamais ce champ vide.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ENREGISTREMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Appelle SYSTÉMATIQUEMENT et une seule fois la fonction save_candidate_to_sqlite
+avec tous les champs remplis (champs à plat, pas d'objets imbriqués), une fois
+l'analyse complète. Ne laisse aucun champ vide.
+
+Contraintes générales : n'invente jamais un diplôme, une compétence ou une expérience
+absente du CV. Si une information est ambiguë ou manquante, dis-le explicitement.
+Reste neutre et professionnel, sans jugement de valeur sur le parcours.
+Les éléments comportementaux sont des pistes de lecture argumentées — jamais un verdict.
 """
 
 # ⚠️ PERFORMANCE : ce modèle était instancié au niveau module, donc reconstruit
@@ -2113,6 +2247,225 @@ index_actuel = options_menu.index(st.session_state['page_active']) if st.session
 menu = st.sidebar.radio("MENU PRINCIPAL", options_menu, index=index_actuel)
 st.session_state['page_active'] = menu
 
+# ==============================================================================
+# --- FONCTION AFFICHAGE PROFIL CANDIDAT ENRICHI (VIVIER) ---
+# Définie ici (niveau module) pour être disponible dans tous les onglets.
+# Appelée dans l'onglet Vivier pour remplacer le bloc texte brut.
+# ==============================================================================
+def afficher_profil_candidat_enrichi(infos_candidat, conn):
+    """Affiche le profil comportemental enrichi d'un candidat de façon visuelle."""
+    candidat_id = int(infos_candidat.get("ID", 0))
+    nom = infos_candidat.get("Nom", "Candidat")
+    poste = infos_candidat.get("Poste", "—")
+    avis_complet = str(infos_candidat.get("Avis_IA_Complet", "") or "")
+
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT profil_riasec, competences_transferables, metiers_cibles,
+                      competences, score_matching
+               FROM candidats WHERE id = %s""",
+            (candidat_id,)
+        )
+        row = cur.fetchone()
+        profil_json_brut    = row[0] if row else None
+        transferables_json  = row[1] if row else None
+        metiers_json        = row[2] if row else None
+        hard_skills_brut    = row[3] if row else ""
+        score_matching_brut = row[4] if row else "0 %"
+    except Exception:
+        profil_json_brut = transferables_json = metiers_json = None
+        hard_skills_brut = ""
+        score_matching_brut = infos_candidat.get("Score_Affiche", "0 %")
+
+    def _parse(val):
+        if not val:
+            return None
+        if isinstance(val, (dict, list)):
+            return val
+        try:
+            return json.loads(val)
+        except Exception:
+            return None
+
+    def _score(s):
+        m = re.search(r"(\d+)", str(s or "0"))
+        return int(m.group(1)) if m else 0
+
+    profil_comportemental = _parse(profil_json_brut) or {}
+    transferables         = _parse(transferables_json) or []
+    metiers_cibles        = _parse(metiers_json) or []
+    score_global          = _score(score_matching_brut)
+
+    hard_skills = []
+    if hard_skills_brut:
+        items = [x.strip() for x in str(hard_skills_brut).split(",") if x.strip()]
+        hard_skills = [x for x in items if "@" not in x]
+
+    traits_dominants = profil_comportemental.get("traits_dominants", [])
+    indices_parcours = profil_comportemental.get("indices_parcours_pro", "")
+    indices_centres  = profil_comportemental.get("indices_centres_interet", "")
+    coherence_projet = profil_comportemental.get("coherence_projet_pro", "")
+
+    # ── En-tête score global ──────────────────────────────────────────────────
+    st.markdown("---")
+    couleur_score = "#16a34a" if score_global >= 70 else "#ea580c" if score_global >= 45 else "#dc2626"
+    st.markdown(f"""
+        <div style="display:flex; align-items:center; gap:18px; margin-bottom:18px;">
+            <div style="background:{couleur_score}; color:white; border-radius:50%;
+                        width:72px; height:72px; display:flex; align-items:center;
+                        justify-content:center; font-size:22px; font-weight:800;
+                        flex-shrink:0;">{score_global}%</div>
+            <div>
+                <div style="font-size:20px; font-weight:700; color:#e2e8f0;">{nom}</div>
+                <div style="color:#94a3b8; font-size:13px;">{poste}</div>
+                <div style="color:{couleur_score}; font-size:12px; font-weight:600; margin-top:2px;">
+                    Score d'employabilité global estimé
+                </div>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+    st.caption(
+        "⚠️ Analyse IA basée sur le seul contenu écrit du CV. "
+        "Les traits comportementaux sont des hypothèses argumentées — "
+        "**à valider impérativement lors d'un entretien avec un recruteur humain.**"
+    )
+    st.markdown("---")
+
+    # ── Bloc 1 : Traits comportementaux dominants (badges visuels) ───────────
+    st.markdown("#### 🧠 Empreinte comportementale")
+    if traits_dominants:
+        nb = min(len(traits_dominants), 5)
+        cols = st.columns(nb)
+        couleurs = ["#2563eb", "#7c3aed", "#0891b2", "#059669", "#d97706"]
+        for i, trait in enumerate(traits_dominants[:nb]):
+            lettre = trait.strip()[0].upper() if trait.strip() else "?"
+            mot_court = trait.strip().split()[0][:10] if trait.strip() else "Trait"
+            with cols[i]:
+                st.markdown(f"""
+                    <div style="text-align:center; background:#1e293b; border-radius:12px;
+                                padding:14px 8px; border:2px solid {couleurs[i % len(couleurs)]};">
+                        <div style="font-size:28px; font-weight:800;
+                                    color:{couleurs[i % len(couleurs)]};">{lettre}</div>
+                        <div style="font-size:11px; color:#94a3b8;
+                                    margin-top:4px; font-weight:600;">{mot_court}</div>
+                    </div>
+                """, unsafe_allow_html=True)
+        st.markdown("")
+        for trait in traits_dominants:
+            st.markdown(f"""
+                <div style="background:#1e293b; border-left:3px solid #2563eb;
+                            border-radius:6px; padding:10px 14px; margin-bottom:6px;
+                            color:#cbd5e1; font-size:13px;">
+                    🔹 {trait}
+                </div>
+            """, unsafe_allow_html=True)
+    else:
+        st.info("Aucun trait comportemental extrait pour ce candidat.")
+    st.markdown("---")
+
+    # ── Bloc 2 : Parcours + Centres d'intérêt ────────────────────────────────
+    col_parc, col_cent = st.columns(2)
+    with col_parc:
+        st.markdown("#### 💼 Lecture du parcours professionnel")
+        if indices_parcours:
+            st.markdown(f"""
+                <div style="background:#1e293b; border-radius:8px; padding:14px;
+                            color:#cbd5e1; font-size:13px; line-height:1.6;">
+                    {indices_parcours}
+                </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.caption("Non renseigné.")
+    with col_cent:
+        st.markdown("#### 🎯 Centres d'intérêt & engagements")
+        if indices_centres and str(indices_centres).strip().lower() not in ("aucun", "non mentionné", ""):
+            st.markdown(f"""
+                <div style="background:#1e293b; border-radius:8px; padding:14px;
+                            color:#cbd5e1; font-size:13px; line-height:1.6;">
+                    {indices_centres}
+                </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.caption("Aucun centre d'intérêt mentionné dans le CV.")
+    if coherence_projet:
+        st.markdown("#### 🔗 Cohérence du projet professionnel")
+        st.markdown(f"""
+            <div style="background:#0f2027; border:1px solid #2563eb; border-radius:8px;
+                        padding:14px; color:#93c5fd; font-size:13px; line-height:1.6;">
+                {coherence_projet}
+            </div>
+        """, unsafe_allow_html=True)
+    st.markdown("---")
+
+    # ── Bloc 3 : Compétences ──────────────────────────────────────────────────
+    col_hard, col_transf = st.columns(2)
+    with col_hard:
+        st.markdown("#### 🛠️ Compétences techniques")
+        if hard_skills:
+            badges = "".join([
+                f'<span style="display:inline-block; background:#1e3a5f; color:#93c5fd; '
+                f'border-radius:20px; padding:4px 12px; margin:3px; font-size:12px; '
+                f'font-weight:600;">{hs}</span>'
+                for hs in hard_skills[:12]
+            ])
+            st.markdown(f'<div style="line-height:2.2;">{badges}</div>', unsafe_allow_html=True)
+        else:
+            st.caption("Non extraites.")
+    with col_transf:
+        st.markdown("#### 🌱 Compétences transférables")
+        if transferables:
+            for comp in transferables[:8]:
+                st.markdown(f"""
+                    <div style="background:#1e293b; border-left:3px solid #16a34a;
+                                border-radius:6px; padding:8px 12px; margin-bottom:5px;
+                                color:#86efac; font-size:12px;">
+                        ✦ {comp}
+                    </div>
+                """, unsafe_allow_html=True)
+        else:
+            st.caption("Non extraites.")
+    st.markdown("---")
+
+    # ── Bloc 4 : Métiers cibles ───────────────────────────────────────────────
+    st.markdown("#### 🎯 Métiers cibles recommandés")
+    if metiers_cibles:
+        nb_metiers = len(metiers_cibles)
+        rangs = ["🥇", "🥈", "🥉"] + [f"#{i+1}" for i in range(3, nb_metiers)]
+        for i, metier in enumerate(metiers_cibles[:6]):
+            score_metier = max(30, score_global - (i * max(3, (score_global - 30) // max(nb_metiers, 1))))
+            couleur_m = "#16a34a" if score_metier >= 70 else "#ea580c" if score_metier >= 50 else "#6b7280"
+            st.markdown(f"""
+                <div style="background:#1e293b; border-radius:8px; padding:10px 14px;
+                            margin-bottom:6px; display:flex; align-items:center;
+                            justify-content:space-between;">
+                    <span style="color:#e2e8f0; font-size:13px; font-weight:600;">
+                        {rangs[i]} {metier}
+                    </span>
+                    <span style="background:{couleur_m}; color:white; border-radius:12px;
+                                 padding:3px 10px; font-size:12px; font-weight:700;
+                                 min-width:48px; text-align:center;">
+                        {score_metier}%
+                    </span>
+                </div>
+            """, unsafe_allow_html=True)
+        st.caption("Classés du plus au moins pertinent par rapport à la solidité globale du profil.")
+    else:
+        st.info("Aucun métier cible extrait.")
+    st.markdown("---")
+
+    # ── Bloc 5 : Compte-rendu narratif (repliable) ────────────────────────────
+    if avis_complet.strip():
+        with st.expander("📄 Lire le compte-rendu narratif complet de l'IA"):
+            st.markdown(f"""
+                <div style="background:#1a202c; padding:18px; border-radius:8px;
+                            color:#e2e8f0; white-space:pre-wrap; line-height:1.7;
+                            font-size:13px;">
+                    {avis_complet}
+                </div>
+            """, unsafe_allow_html=True)
+
+
 # --- ONGLET 0 : TABLEAU DE BORD (digest quotidien + Agent IA de pilotage) ---
 if st.session_state['page_active'] == "🧭 TABLEAU DE BORD":
     st.header("🧭 Tableau de Bord — Synthèse Quotidienne")
@@ -2511,14 +2864,7 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
                         st.markdown(f"👤 **Profil :** {candidat_selectionne} — *{infos_candidat['Poste']}*")
                         st.markdown(f"📌 **Statut :** `{statut_actuel}` | **Score de correspondance :** `{score_suivi}`")
 
-                    avis_complet = infos_candidat.get("Avis_IA_Complet", "")
-                    if pd.notnull(avis_complet) and str(avis_complet).strip():
-                        with st.expander("🤖 Voir le compte-rendu IA complet"):
-                            st.markdown(f"""
-                                <div style="background-color: #1a202c; padding: 16px; border-radius: 8px; color: #e2e8f0; white-space: pre-wrap; line-height: 1.6;">
-                                    {avis_complet}
-                                </div>
-                            """, unsafe_allow_html=True)
+                    afficher_profil_candidat_enrichi(infos_candidat, conn)
                     
                     with col_bouton_urssaf:
                         if statut_actuel == "En mission":
