@@ -1037,15 +1037,9 @@ def _get_tool_save_candidate():
     ]
 )
 _SYSTEM_PROMPT_AGENT = """
-Tu es un analyste expert en profils professionnels, spécialisé dans la lecture comportementale
-et psycho-professionnelle des CV pour un cabinet de recrutement indépendant.
-
-Ta mission : produire, à partir du seul contenu d'un CV brut, une analyse complète en 3 couches —
-compétences réelles, compétences transférables, et empreinte comportementale — sans questionnaire,
-sans test externe, et sans jamais faire référence à un modèle psychométrique connu (RIASEC, MBTI,
-Big Five, DISC, etc.). Ton analyse s'appuie uniquement sur ce que le CV dit, montre et révèle.
-
-Tu dois être rigoureux, factuel, nuancé, et ne jamais inventer d'informations absentes du CV.
+Tu es un agent IA expert en analyse de profils professionnels pour un cabinet de recrutement.
+Ta mission : analyser un CV brut, SANS offre d'emploi de référence, pour enrichir un vivier de candidats.
+Tu dois être rigoureux, factuel, et ne jamais inventer d'informations absentes du CV.
 
 ═══════════════════════════════════════════════════════════
 RÈGLES ABSOLUES — À RESPECTER SANS EXCEPTION
@@ -1072,15 +1066,13 @@ PROCÉDURE — 3 COUCHES + SYNTHÈSE
 ═══════════════════════════════════════════════════════════
 
 ━━━ COUCHE 1 — COMPÉTENCES RÉELLES ━━━
-
 Hard skills (diplômes, certifs, outils, logiciels, méthodes) — précis, directement issus du CV.
-
 Compétences transférables : format obligatoire :
 [COMPÉTENCE] — issue de [employeur + période] — [atout dans un autre contexte]
 
 ━━━ COUCHE 2 — EMPREINTE COMPORTEMENTALE ━━━
 
-indices_parcours_pro : analyse ces 5 signaux comportementaux :
+indices_parcours_pro : analyse ces 5 signaux :
 1. ANCRAGE vs EXPLORATION : durée des postes, secteurs traversés
 2. MODE D'ACTION dominant (verbes) : initiateur / coordinateur / transmetteur / améliorateur / manager
 3. ORIENTATION naturelle : résultats / relations / méthodes
@@ -1090,8 +1082,8 @@ indices_parcours_pro : analyse ces 5 signaux comportementaux :
 indices_centres_interet : grille de lecture (croiser, jamais appliquer mécaniquement) :
 - Sport collectif → esprit d'équipe · Sport individuel de perf → discipline, dépassement
 - Bénévolat encadrement → leadership naturel, pédagogie · Bénévolat aide → empathie profonde
-- Créatif → sensibilité, créativité · Intellectuel → réflexion, concentration
-- Manuel → sens pratique · Voyages hors sentiers → autonomie, ouverture interculturelle
+- Créatif → sensibilité · Intellectuel → réflexion · Manuel → sens pratique
+- Voyages hors sentiers → autonomie, ouverture interculturelle
 - Naturopathie/bien-être → orientation prendre soin, approche holistique
 Signale convergences (signal fort) et contradictions parcours/loisirs (signal intéressant).
 
@@ -1100,9 +1092,7 @@ traits_dominants : 3 à 5 traits, chacun en 1 phrase percutante + source dans le
 coherence_projet_pro : 3 phrases : fil conducteur, maturité du projet, 1-2 questions pour l'entretien.
 
 ━━━ COUCHE 3 — PROJECTION ━━━
-
 metiers_cibles : 4 à 6 métiers concrets classés par pertinence (nourris par l'analyse comportementale).
-
 pourcentage_adequation : score 0-100 pondéré :
 parcours (35%) + compétences transférables (30%) + projet pro (20%) + centres d'intérêt (15%)
 
@@ -2102,11 +2092,243 @@ menu = st.sidebar.radio("MENU PRINCIPAL", options_menu, index=index_actuel)
 st.session_state['page_active'] = menu
 
 # ==============================================================================
-# --- FONCTION AFFICHAGE PROFIL CANDIDAT ENRICHI ---
-# Définie au niveau module pour être disponible dans tous les onglets.
+# FONCTION : génération PDF dossier candidat
+# ==============================================================================
+def generer_pdf_candidat(nom, poste, score_global, traits_dominants,
+                          indices_parcours, indices_centres, coherence_projet,
+                          hard_skills, transferables, metiers_cibles, avis_complet):
+    """Génère un PDF professionnel du dossier candidat OmniRecrut IA."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+    from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
+    import io, datetime
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4,
+                            rightMargin=2*cm, leftMargin=2*cm,
+                            topMargin=2*cm, bottomMargin=2*cm)
+
+    BLEU   = colors.HexColor("#1a2e4a")
+    BLEU2  = colors.HexColor("#2563eb")
+    BLCL   = colors.HexColor("#dbeafe")
+    GRIS   = colors.HexColor("#f8fafc")
+    GTXT   = colors.HexColor("#475569")
+    VERT   = colors.HexColor("#16a34a")
+    ORANGE = colors.HexColor("#ea580c")
+    ROUGE  = colors.HexColor("#dc2626")
+    BLANC  = colors.white
+
+    couleur_score = VERT if score_global >= 70 else ORANGE if score_global >= 45 else ROUGE
+
+    styles = getSampleStyleSheet()
+    h1 = ParagraphStyle('H1', fontSize=13, textColor=BLANC, fontName='Helvetica-Bold',
+                         spaceAfter=6, spaceBefore=4, leading=16)
+    h2 = ParagraphStyle('H2', fontSize=11, textColor=BLEU, fontName='Helvetica-Bold',
+                         spaceAfter=5, spaceBefore=8)
+    corps = ParagraphStyle('Corps', fontSize=9, textColor=GTXT, fontName='Helvetica',
+                            spaceAfter=3, leading=13)
+    corps_b = ParagraphStyle('CorpsB', fontSize=9, textColor=BLEU, fontName='Helvetica-Bold',
+                              spaceAfter=3)
+    petit = ParagraphStyle('Petit', fontSize=8, textColor=GTXT, fontName='Helvetica-Oblique',
+                            spaceAfter=2, leading=11)
+
+    def bloc_header(titre, couleur=BLEU):
+        t = Table([[Paragraph(titre, h1)]], colWidths=[17*cm])
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,-1), couleur),
+            ('TOPPADDING', (0,0), (-1,-1), 8),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+            ('LEFTPADDING', (0,0), (-1,-1), 12),
+        ]))
+        return t
+
+    story = []
+
+    # ── En-tête ───────────────────────────────────────────────────────────────
+    entete = Table([[
+        Paragraph(f"<b>{nom}</b>", ParagraphStyle('N', fontSize=18, textColor=BLANC,
+                  fontName='Helvetica-Bold', leading=22)),
+        Paragraph(f"<b>{score_global}%</b>", ParagraphStyle('S', fontSize=20, textColor=BLANC,
+                  fontName='Helvetica-Bold', alignment=TA_RIGHT))
+    ]], colWidths=[13*cm, 4*cm])
+    entete.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,-1), BLEU),
+        ('TOPPADDING', (0,0), (-1,-1), 16),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+        ('LEFTPADDING', (0,0), (-1,-1), 14),
+        ('RIGHTPADDING', (0,0), (-1,-1), 14),
+    ]))
+    story.append(entete)
+
+    sous_titre = Table([[
+        Paragraph(poste, ParagraphStyle('P', fontSize=11, textColor=BLCL,
+                  fontName='Helvetica', leading=14)),
+        Paragraph("Score d'employabilité estimé", ParagraphStyle('SS', fontSize=8,
+                  textColor=colors.HexColor("#93c5fd"), fontName='Helvetica-Oblique',
+                  alignment=TA_RIGHT))
+    ]], colWidths=[13*cm, 4*cm])
+    sous_titre.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,-1), BLEU),
+        ('TOPPADDING', (0,0), (-1,-1), 2),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 12),
+        ('LEFTPADDING', (0,0), (-1,-1), 14),
+        ('RIGHTPADDING', (0,0), (-1,-1), 14),
+    ]))
+    story.append(sous_titre)
+    story.append(Spacer(1, 0.3*cm))
+
+    date_str = datetime.datetime.now().strftime("%d/%m/%Y à %H:%M")
+    story.append(Paragraph(
+        f"Dossier généré le {date_str} par OmniRecrut IA · Document confidentiel",
+        ParagraphStyle('D', fontSize=8, textColor=GTXT, fontName='Helvetica-Oblique',
+                       alignment=TA_RIGHT)))
+    story.append(Spacer(1, 0.2*cm))
+
+    # ── Disclaimer ────────────────────────────────────────────────────────────
+    disc = Table([[Paragraph(
+        "⚠️  Analyse produite par intelligence artificielle à partir du seul contenu écrit du CV. "
+        "Les éléments comportementaux sont des hypothèses argumentées — à valider impérativement "
+        "lors d'un entretien conduit par un recruteur humain.",
+        petit)]], colWidths=[17*cm])
+    disc.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#fef3c7")),
+        ('TOPPADDING', (0,0), (-1,-1), 6), ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+        ('LEFTPADDING', (0,0), (-1,-1), 10),
+        ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor("#f59e0b")),
+    ]))
+    story.append(disc)
+    story.append(Spacer(1, 0.3*cm))
+
+    # ── Traits comportementaux ────────────────────────────────────────────────
+    story.append(bloc_header("🧠  Empreinte comportementale"))
+    story.append(Spacer(1, 0.2*cm))
+    if traits_dominants:
+        for t in traits_dominants:
+            story.append(Paragraph(f"🔹  {t}", corps))
+    else:
+        story.append(Paragraph("Non extrait.", petit))
+    story.append(Spacer(1, 0.3*cm))
+
+    # ── Parcours + Centres d'intérêt ─────────────────────────────────────────
+    col_g = []
+    col_d = []
+
+    col_g.append(Paragraph("💼  Lecture du parcours professionnel", h2))
+    if indices_parcours:
+        col_g.append(Paragraph(str(indices_parcours), corps))
+    else:
+        col_g.append(Paragraph("Non renseigné.", petit))
+
+    col_d.append(Paragraph("🎯  Centres d'intérêt & engagements", h2))
+    if indices_centres and str(indices_centres).strip().lower() not in ("aucun", "non mentionné", ""):
+        col_d.append(Paragraph(str(indices_centres), corps))
+    else:
+        col_d.append(Paragraph("Aucun centre d'intérêt mentionné dans le CV.", petit))
+
+    t_deux = Table([[col_g, col_d]], colWidths=[8.3*cm, 8.3*cm])
+    t_deux.setStyle(TableStyle([
+        ('VALIGN', (0,0), (-1,-1), 'TOP'),
+        ('LEFTPADDING', (0,0), (-1,-1), 4),
+        ('RIGHTPADDING', (0,0), (-1,-1), 4),
+    ]))
+    story.append(t_deux)
+
+    if coherence_projet:
+        story.append(Spacer(1, 0.2*cm))
+        story.append(Paragraph("🔗  Cohérence du projet professionnel", h2))
+        coh = Table([[Paragraph(str(coherence_projet), corps)]], colWidths=[17*cm])
+        coh.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#eff6ff")),
+            ('TOPPADDING', (0,0), (-1,-1), 8), ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+            ('LEFTPADDING', (0,0), (-1,-1), 10),
+            ('BOX', (0,0), (-1,-1), 0.5, BLEU2),
+        ]))
+        story.append(coh)
+    story.append(Spacer(1, 0.3*cm))
+
+    # ── Compétences ───────────────────────────────────────────────────────────
+    story.append(bloc_header("🛠️  Compétences"))
+    story.append(Spacer(1, 0.2*cm))
+
+    hs_col, tr_col = [], []
+    hs_col.append(Paragraph("Compétences techniques (Hard Skills)", corps_b))
+    if hard_skills:
+        for hs in hard_skills[:12]:
+            hs_col.append(Paragraph(f"• {hs}", corps))
+    else:
+        hs_col.append(Paragraph("Non extraites.", petit))
+
+    tr_col.append(Paragraph("Compétences transférables", corps_b))
+    if transferables:
+        for comp in transferables[:8]:
+            tr_col.append(Paragraph(f"✦  {comp}", corps))
+    else:
+        tr_col.append(Paragraph("Non extraites.", petit))
+
+    t_comp = Table([[hs_col, tr_col]], colWidths=[8.3*cm, 8.3*cm])
+    t_comp.setStyle(TableStyle([
+        ('VALIGN', (0,0), (-1,-1), 'TOP'),
+        ('LEFTPADDING', (0,0), (-1,-1), 4),
+        ('RIGHTPADDING', (0,0), (-1,-1), 4),
+    ]))
+    story.append(t_comp)
+    story.append(Spacer(1, 0.3*cm))
+
+    # ── Métiers cibles ────────────────────────────────────────────────────────
+    story.append(bloc_header("🎯  Métiers cibles recommandés"))
+    story.append(Spacer(1, 0.2*cm))
+    if metiers_cibles:
+        rangs = ["🥇", "🥈", "🥉"] + [f"#{i+1}" for i in range(3, len(metiers_cibles))]
+        for i, metier in enumerate(metiers_cibles[:6]):
+            score_m = max(30, score_global - (i * max(3, (score_global - 30) // max(len(metiers_cibles), 1))))
+            c_m = VERT if score_m >= 70 else ORANGE if score_m >= 50 else colors.HexColor("#6b7280")
+            row = Table([[
+                Paragraph(f"{rangs[i]}  {metier}", corps_b),
+                Paragraph(f"<b>{score_m}%</b>", ParagraphStyle('Sc', fontSize=9,
+                          textColor=BLANC, fontName='Helvetica-Bold', alignment=TA_CENTER))
+            ]], colWidths=[14*cm, 3*cm])
+            row.setStyle(TableStyle([
+                ('BACKGROUND', (1,0), (1,0), c_m),
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                ('TOPPADDING', (0,0), (-1,-1), 5), ('BOTTOMPADDING', (0,0), (-1,-1), 5),
+                ('LEFTPADDING', (0,0), (-1,-1), 6),
+                ('ROWBACKGROUNDS', (0,0), (0,0), [GRIS if i % 2 == 0 else BLANC]),
+            ]))
+            story.append(row)
+    else:
+        story.append(Paragraph("Aucun métier cible extrait.", petit))
+    story.append(Spacer(1, 0.3*cm))
+
+    # ── Compte-rendu narratif ─────────────────────────────────────────────────
+    if avis_complet and str(avis_complet).strip():
+        story.append(bloc_header("📄  Compte-rendu narratif de l'IA"))
+        story.append(Spacer(1, 0.2*cm))
+        avis_propre = str(avis_complet).replace("<", "&lt;").replace(">", "&gt;")
+        story.append(Paragraph(avis_propre,
+            ParagraphStyle('Avis', fontSize=8.5, textColor=GTXT, fontName='Helvetica',
+                           leading=13, spaceAfter=4)))
+
+    # ── Footer ────────────────────────────────────────────────────────────────
+    story.append(Spacer(1, 0.4*cm))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#e2e8f0")))
+    story.append(Paragraph(
+        "OmniRecrut IA — Analyse CV comportementale augmentée · omnirecrutia.fr",
+        ParagraphStyle('F', fontSize=7.5, textColor=GTXT, fontName='Helvetica-Oblique',
+                       alignment=TA_CENTER)))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
+
+
+# ==============================================================================
+# FONCTION : affichage profil candidat enrichi (vivier)
 # ==============================================================================
 def afficher_profil_candidat_enrichi(infos_candidat, conn):
-    """Affiche le profil comportemental enrichi d'un candidat de façon visuelle."""
+    """Affiche le profil comportemental enrichi + bouton téléchargement PDF."""
     candidat_id = int(infos_candidat.get("ID", 0))
     nom = infos_candidat.get("Nom", "Candidat")
     poste = infos_candidat.get("Poste", "—")
@@ -2160,27 +2382,62 @@ def afficher_profil_candidat_enrichi(infos_candidat, conn):
     coherence_projet = profil_comportemental.get("coherence_projet_pro", "")
 
     st.markdown("---")
+
+    # ── En-tête score + bouton PDF ────────────────────────────────────────────
     couleur_score = "#16a34a" if score_global >= 70 else "#ea580c" if score_global >= 45 else "#dc2626"
-    st.markdown(f"""
-        <div style="display:flex; align-items:center; gap:18px; margin-bottom:18px;">
-            <div style="background:{couleur_score}; color:white; border-radius:50%;
-                        width:72px; height:72px; display:flex; align-items:center;
-                        justify-content:center; font-size:22px; font-weight:800;
-                        flex-shrink:0;">{score_global}%</div>
-            <div>
-                <div style="font-size:20px; font-weight:700; color:#e2e8f0;">{nom}</div>
-                <div style="color:#94a3b8; font-size:13px;">{poste}</div>
-                <div style="color:{couleur_score}; font-size:12px; font-weight:600; margin-top:2px;">
-                    Score d'employabilité global estimé
+    col_entete, col_pdf = st.columns([4, 1])
+
+    with col_entete:
+        st.markdown(f"""
+            <div style="display:flex; align-items:center; gap:18px; margin-bottom:10px;">
+                <div style="background:{couleur_score}; color:white; border-radius:50%;
+                            width:72px; height:72px; display:flex; align-items:center;
+                            justify-content:center; font-size:22px; font-weight:800;
+                            flex-shrink:0;">{score_global}%</div>
+                <div>
+                    <div style="font-size:20px; font-weight:700; color:#e2e8f0;">{nom}</div>
+                    <div style="color:#94a3b8; font-size:13px;">{poste}</div>
+                    <div style="color:{couleur_score}; font-size:12px; font-weight:600; margin-top:2px;">
+                        Score d'employabilité global estimé
+                    </div>
                 </div>
             </div>
-        </div>
-    """, unsafe_allow_html=True)
-    st.caption("⚠️ Analyse IA basée sur le seul contenu écrit du CV. "
-               "Traits comportementaux = hypothèses argumentées — "
-               "**à valider impérativement lors d'un entretien avec un recruteur humain.**")
+        """, unsafe_allow_html=True)
+
+    with col_pdf:
+        try:
+            pdf_buffer = generer_pdf_candidat(
+                nom=nom, poste=poste, score_global=score_global,
+                traits_dominants=traits_dominants,
+                indices_parcours=indices_parcours,
+                indices_centres=indices_centres,
+                coherence_projet=coherence_projet,
+                hard_skills=hard_skills,
+                transferables=transferables,
+                metiers_cibles=metiers_cibles,
+                avis_complet=avis_complet
+            )
+            nom_fichier = f"OmniRecrut_{nom.replace(' ', '_')}.pdf"
+            st.download_button(
+                label="📥 Télécharger le dossier PDF",
+                data=pdf_buffer,
+                file_name=nom_fichier,
+                mime="application/pdf",
+                use_container_width=True,
+                type="primary",
+                key=f"dl_pdf_{candidat_id}"
+            )
+        except Exception as e:
+            st.caption(f"PDF indisponible : {e}")
+
+    st.caption(
+        "⚠️ Analyse IA basée sur le seul contenu écrit du CV. "
+        "Traits comportementaux = hypothèses argumentées — "
+        "**à valider impérativement lors d'un entretien avec un recruteur humain.**"
+    )
     st.markdown("---")
 
+    # ── Bloc 1 : Traits comportementaux (badges visuels) ─────────────────────
     st.markdown("#### 🧠 Empreinte comportementale")
     if traits_dominants:
         nb = min(len(traits_dominants), 5)
@@ -2210,6 +2467,7 @@ def afficher_profil_candidat_enrichi(infos_candidat, conn):
         st.info("Aucun trait comportemental extrait pour ce candidat.")
     st.markdown("---")
 
+    # ── Bloc 2 : Parcours + Centres d'intérêt ────────────────────────────────
     col_parc, col_cent = st.columns(2)
     with col_parc:
         st.markdown("#### 💼 Lecture du parcours professionnel")
@@ -2238,6 +2496,7 @@ def afficher_profil_candidat_enrichi(infos_candidat, conn):
         """, unsafe_allow_html=True)
     st.markdown("---")
 
+    # ── Bloc 3 : Compétences ──────────────────────────────────────────────────
     col_hard, col_transf = st.columns(2)
     with col_hard:
         st.markdown("#### 🛠️ Compétences techniques")
@@ -2263,6 +2522,7 @@ def afficher_profil_candidat_enrichi(infos_candidat, conn):
             st.caption("Non extraites.")
     st.markdown("---")
 
+    # ── Bloc 4 : Métiers cibles ───────────────────────────────────────────────
     st.markdown("#### 🎯 Métiers cibles recommandés")
     if metiers_cibles:
         nb_metiers = len(metiers_cibles)
@@ -2285,6 +2545,7 @@ def afficher_profil_candidat_enrichi(infos_candidat, conn):
         st.info("Aucun métier cible extrait.")
     st.markdown("---")
 
+    # ── Bloc 5 : Compte-rendu narratif (repliable) ────────────────────────────
     if avis_complet.strip():
         with st.expander("📄 Compte-rendu narratif complet de l'IA"):
             st.markdown(f"""
@@ -2517,8 +2778,7 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
                 except Exception as e:
                     st.error(f"Erreur lors de l'analyse : {e}")
 
-        # --- CONFIRMATION COMPACTE POST-ANALYSE ---
-        # Le rapport complet est visible dans le vivier via afficher_profil_candidat_enrichi()
+        # --- RAPPORT DÉTAILLÉ STYLÉ (même codes visuels que le module de matching) ---
         if st.session_state.get("dernier_rapport_agent"):
             d = st.session_state["dernier_rapport_agent"].get("donnees_structurees") or {}
             nom_cand = d.get("nom_complet", "Candidat")
@@ -2540,7 +2800,7 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
                         </span>
                     </div>
                     <div style="color:#a3b1cc; font-size:12px; margin-top:6px;">
-                        Score d'employabilité estimé · Consultez le vivier pour le profil complet enrichi.
+                        Score d'employabilité estimé · Consultez le vivier pour le profil complet enrichi et le PDF téléchargeable.
                     </div>
                 </div>
             """, unsafe_allow_html=True)
@@ -2559,7 +2819,7 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
                 for t in traits_dom[:3]:
                     st.markdown(f"🔹 {t}")
 
-            st.caption("👉 Rendez-vous dans le vivier pour consulter l'analyse comportementale complète.")
+            st.caption("👉 Rendez-vous dans le vivier pour l'analyse comportementale complète et le PDF du dossier candidat.")
 
             if st.button("🗑️ Effacer cette confirmation", key="btn_clear_rapport_agent"):
                 del st.session_state["dernier_rapport_agent"]
