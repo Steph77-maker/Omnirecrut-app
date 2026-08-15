@@ -3502,13 +3502,18 @@ elif st.session_state["page_active"] == "🏢 PORTEFEUILLE CLIENTS":
     tel = st.text_input("Téléphone :")
     email = st.text_input("Email :")
 
-    choix_secteurs = ["-- Sélectionner --"] + LISTE_SECTEURS[1:] + ["Autre"]
+    choix_secteurs = ["-- Sélectionner --"] + LISTE_SECTEURS[1:] + ["Autre (préciser)"]
     secteur_selection = st.selectbox("Secteur d'activité :", choix_secteurs)
-    secteur_act_client = (
-        st.text_input("Précisez le secteur :")
-        if secteur_selection == "Autre"
-        else secteur_selection
-    )
+    if secteur_selection == "Autre (préciser)":
+        secteur_act_client = st.text_input(
+            "Précisez le secteur d'activité :",
+            placeholder="Ex: Restauration collective, Aide à domicile...",
+            key="client_secteur_libre",
+        ).strip()
+        if not secteur_act_client:
+            st.caption("⚠️ Saisissez le secteur pour qu'il soit bien enregistré.")
+    else:
+        secteur_act_client = secteur_selection
 
     priorite = st.select_slider(
         "Priorité :", options=["Froid", "Tiède", "Chaud", "VIP"]
@@ -4409,11 +4414,22 @@ elif st.session_state['page_active'] == "📋 GESTION ADMINISTRATIVE & RH":
             # code tentait de récupérer un secteur depuis un tout autre onglet, ce qui
             # ne fonctionnait jamais et faisait retomber systématiquement sur "Général" —
             # cause principale des détections de CCN peu pertinentes).
-            secteur_ccn_contrat = st.selectbox(
+            _choix_secteurs_ccn = LISTE_SECTEURS[1:] + ["Autre (préciser)"]
+            _secteur_ccn_select = st.selectbox(
                 "Secteur d'activité (utilisé pour détecter la CCN) :",
-                LISTE_SECTEURS[1:],
+                _choix_secteurs_ccn,
                 key="rh_secteur_ccn",
             )
+            if _secteur_ccn_select == "Autre (préciser)":
+                secteur_ccn_contrat = st.text_input(
+                    "Précisez le secteur d'activité :",
+                    placeholder="Ex: Restauration collective, Aide à domicile...",
+                    key="rh_secteur_ccn_libre",
+                ).strip()
+                if not secteur_ccn_contrat:
+                    st.caption("⚠️ Saisissez le secteur pour que la CCN soit correctement détectée.")
+            else:
+                secteur_ccn_contrat = _secteur_ccn_select
         with col_c4:
             periode_essai = st.number_input("Période d'essai (en jours) :", min_value=0, max_value=30, value=5)
         
