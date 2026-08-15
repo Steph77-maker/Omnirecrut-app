@@ -4469,53 +4469,210 @@ elif st.session_state['page_active'] == "📋 GESTION ADMINISTRATIVE & RH":
                 #      Travail plutôt que de risquer une fausse information.
                 # ==============================================================================
                 CCN_LISTE_VERIFIEE = [
+                    # --- Restauration & Hôtellerie ---
                     "Convention Collective Nationale des Hôtels, Cafés, Restaurants — HCR (IDCC 1979)",
                     "Convention Collective Nationale de la Restauration Collective (IDCC 1266)",
+                    "Convention Collective Nationale de la Boulangerie-Pâtisserie Artisanale (IDCC 843)",
+                    "Convention Collective Nationale des Chaînes de Cafétérias et Assimilés (IDCC 1553)",
+                    # --- Transport & Logistique ---
                     "Convention Collective Nationale des Transports Routiers et Activités Auxiliaires du Transport (IDCC 16)",
-                    "Convention Collective Nationale Syntec — Bureaux d'Études Techniques, Conseil, Ingénierie (IDCC 1486)",
+                    "Convention Collective Nationale des Entreprises de Transport de Voyageurs (IDCC 1424)",
+                    "Convention Collective Nationale des Ports et Manutention (IDCC 1609)",
+                    # --- Commerce ---
+                    "Convention Collective Nationale du Commerce de Détail et de Gros à Prédominance Alimentaire — Grande Distribution (IDCC 2216)",
                     "Convention Collective Nationale du Commerce de Détail Non Alimentaire (IDCC 1517)",
-                    "Convention Collective Nationale du Commerce de Détail et de Gros à Prédominance Alimentaire (IDCC 2216)",
+                    "Convention Collective Nationale du Commerce de Gros (IDCC 573)",
+                    "Convention Collective Nationale de la Pharmacie d'Officine (IDCC 1997)",
+                    "Convention Collective Nationale de l'Automobile — Services de l'Automobile (IDCC 1090)",
+                    # --- Bureaux & Tertiaire ---
+                    "Convention Collective Nationale Syntec — Bureaux d'Études Techniques, Conseil, Ingénierie (IDCC 1486)",
+                    "Convention Collective Nationale des Bureaux d'Études Techniques — CINOV (IDCC 1486)",
+                    "Convention Collective Nationale des Employés, Techniciens et Agents de Maîtrise — ETAM Tertiaire (IDCC 1702)",
+                    "Convention Collective Nationale de la Banque (IDCC 2120)",
+                    "Convention Collective Nationale des Sociétés d'Assurances (IDCC 1672)",
+                    "Convention Collective Nationale de l'Immobilier (IDCC 1527)",
                     "Convention Collective Nationale des Experts-Comptables et Commissaires aux Comptes (IDCC 787)",
+                    # --- Propreté & Services ---
+                    "Convention Collective Nationale des Entreprises de Propreté et Services Associés (IDCC 3043)",
+                    "Convention Collective Nationale de la Sécurité Privée (IDCC 3196)",
+                    "Convention Collective Nationale des Services à la Personne (IDCC 3127)",
+                    "Convention Collective Nationale de l'Aide, de l'Accompagnement, des Soins et Services à Domicile — BAD (IDCC 2941)",
+                    "Convention Collective Nationale des Établissements Privés d'Hospitalisation — FEHAP (IDCC 2890)",
+                    "Convention Collective Nationale des Cabinets Médicaux (IDCC 1090)",
+                    # --- Social & Formation ---
                     "Convention Collective Nationale des Missions Locales et PAIO — insertion professionnelle (IDCC 2190)",
                     "Convention Collective Nationale des Organismes de Formation (IDCC 1516)",
-                    "Convention Collective Nationale des Ouvriers du Bâtiment (IDCC à confirmer selon effectif : 1596 ou 1597)",
+                    "Convention Collective Nationale de l'Animation Socioculturelle (IDCC 1518)",
+                    "Convention Collective Nationale des Établissements et Services pour Personnes Inadaptées et Handicapées — CCNT 66 (IDCC 413)",
+                    "Convention Collective Nationale des Acteurs du Lien Social et Familial — ALISFA (IDCC 1261)",
+                    # --- Bâtiment & TP ---
+                    "Convention Collective Nationale des Ouvriers du Bâtiment — entreprises jusqu'à 10 salariés (IDCC 1596)",
+                    "Convention Collective Nationale des Ouvriers du Bâtiment — entreprises plus de 10 salariés (IDCC 1597)",
                     "Convention Collective Nationale des ETAM du Bâtiment (IDCC 2609)",
-                    "Convention Collective Nationale de la Métallurgie (IDCC à confirmer — convention nationale unifiée depuis 2024)",
+                    "Convention Collective Nationale des Travaux Publics — Ouvriers (IDCC 1702)",
+                    "Convention Collective Nationale des Travaux Publics — ETAM (IDCC 2614)",
+                    # --- Industrie & Production ---
+                    "Convention Collective Nationale de la Métallurgie — convention nationale unifiée (IDCC 3248)",
+                    "Convention Collective Nationale des Industries Chimiques et Connexes (IDCC 44)",
+                    "Convention Collective Nationale du Textile (IDCC 18)",
+                    "Convention Collective Nationale de l'Industrie Pharmaceutique (IDCC 176)",
+                    "Convention Collective Nationale de la Plasturgie (IDCC 292)",
+                    # --- Agriculture ---
+                    "Convention Collective Nationale de la Production Agricole et des CUMA (IDCC 7024)",
+                    "Convention Collective Nationale des Coopératives Agricoles (IDCC 7001)",
                 ]
 
-                # Mots-clés du POSTE → correspondance directe et sans ambiguïté (priorité 1)
-                _ccn_par_mot_cle = {
-                    "cuisinier": CCN_LISTE_VERIFIEE[0], "chef de cuisine": CCN_LISTE_VERIFIEE[0],
-                    "serveur": CCN_LISTE_VERIFIEE[0], "réceptionniste": CCN_LISTE_VERIFIEE[0],
-                    "femme de chambre": CCN_LISTE_VERIFIEE[0], "hôtel": CCN_LISTE_VERIFIEE[0],
-                    "cantine": CCN_LISTE_VERIFIEE[1], "restauration collective": CCN_LISTE_VERIFIEE[1],
-                    "chauffeur": CCN_LISTE_VERIFIEE[2], "livreur": CCN_LISTE_VERIFIEE[2],
-                    "cariste": CCN_LISTE_VERIFIEE[2], "magasinier": CCN_LISTE_VERIFIEE[2],
-                    "développeur": CCN_LISTE_VERIFIEE[3], "ingénieur logiciel": CCN_LISTE_VERIFIEE[3],
-                    "consultant": CCN_LISTE_VERIFIEE[3], "informatique": CCN_LISTE_VERIFIEE[3],
-                    "vendeur": CCN_LISTE_VERIFIEE[4],
-                    "caissier": CCN_LISTE_VERIFIEE[5],
-                    "comptable": CCN_LISTE_VERIFIEE[6], "expert-comptable": CCN_LISTE_VERIFIEE[6],
-                    "insertion": CCN_LISTE_VERIFIEE[7], "mission locale": CCN_LISTE_VERIFIEE[7],
-                    "conseiller emploi": CCN_LISTE_VERIFIEE[7], "conseiller en insertion": CCN_LISTE_VERIFIEE[7],
-                    "formateur": CCN_LISTE_VERIFIEE[8], "formation": CCN_LISTE_VERIFIEE[8],
-                    "maçon": CCN_LISTE_VERIFIEE[9], "plombier": CCN_LISTE_VERIFIEE[9],
-                    "électricien": CCN_LISTE_VERIFIEE[9], "peintre en bâtiment": CCN_LISTE_VERIFIEE[9],
-                    "conducteur de travaux": CCN_LISTE_VERIFIEE[10],
-                    "opérateur de production": CCN_LISTE_VERIFIEE[11], "technicien industriel": CCN_LISTE_VERIFIEE[11],
+                # ----------------------------------------------------------------
+                # Détection par SECTEUR (priorité absolue) puis par POSTE
+                # Le secteur saisi par l'utilisateur est la donnée la plus fiable.
+                # ----------------------------------------------------------------
+                _ccn_par_secteur = {
+                    # Restauration / Hôtellerie
+                    "restauration collective": CCN_LISTE_VERIFIEE[1],
+                    "cantine": CCN_LISTE_VERIFIEE[1],
+                    "cafétéria": CCN_LISTE_VERIFIEE[3],
+                    "hôtellerie": CCN_LISTE_VERIFIEE[0],
+                    "restaurant": CCN_LISTE_VERIFIEE[0],
+                    "boulangerie": CCN_LISTE_VERIFIEE[2],
+                    "pâtisserie": CCN_LISTE_VERIFIEE[2],
+                    # Transport / Logistique
+                    "transport routier": CCN_LISTE_VERIFIEE[4],
+                    "transport de voyageurs": CCN_LISTE_VERIFIEE[5],
+                    "logistique": CCN_LISTE_VERIFIEE[4],
+                    "manutention": CCN_LISTE_VERIFIEE[6],
+                    # Commerce
+                    "grande distribution": CCN_LISTE_VERIFIEE[7],
+                    "supermarché": CCN_LISTE_VERIFIEE[7],
+                    "commerce alimentaire": CCN_LISTE_VERIFIEE[7],
+                    "commerce non alimentaire": CCN_LISTE_VERIFIEE[8],
+                    "commerce de gros": CCN_LISTE_VERIFIEE[9],
+                    "pharmacie": CCN_LISTE_VERIFIEE[10],
+                    "automobile": CCN_LISTE_VERIFIEE[11],
+                    "garage": CCN_LISTE_VERIFIEE[11],
+                    # Tertiaire / Bureau
+                    "informatique": CCN_LISTE_VERIFIEE[12],
+                    "bureaux d'études": CCN_LISTE_VERIFIEE[12],
+                    "conseil": CCN_LISTE_VERIFIEE[12],
+                    "ingénierie": CCN_LISTE_VERIFIEE[12],
+                    "banque": CCN_LISTE_VERIFIEE[15],
+                    "assurance": CCN_LISTE_VERIFIEE[16],
+                    "immobilier": CCN_LISTE_VERIFIEE[17],
+                    "expertise comptable": CCN_LISTE_VERIFIEE[18],
+                    "cabinet comptable": CCN_LISTE_VERIFIEE[18],
+                    # Propreté & Services
+                    "propreté": CCN_LISTE_VERIFIEE[19],
+                    "nettoyage": CCN_LISTE_VERIFIEE[19],
+                    "sécurité privée": CCN_LISTE_VERIFIEE[20],
+                    "gardiennage": CCN_LISTE_VERIFIEE[20],
+                    "services à la personne": CCN_LISTE_VERIFIEE[21],
+                    "aide à domicile": CCN_LISTE_VERIFIEE[22],
+                    "saad": CCN_LISTE_VERIFIEE[22],
+                    "ssiad": CCN_LISTE_VERIFIEE[22],
+                    "hospitalisation privée": CCN_LISTE_VERIFIEE[23],
+                    "clinique": CCN_LISTE_VERIFIEE[23],
+                    "cabinet médical": CCN_LISTE_VERIFIEE[24],
+                    # Social & Formation
+                    "mission locale": CCN_LISTE_VERIFIEE[25],
+                    "insertion": CCN_LISTE_VERIFIEE[25],
+                    "formation": CCN_LISTE_VERIFIEE[26],
+                    "animation": CCN_LISTE_VERIFIEE[27],
+                    "handicap": CCN_LISTE_VERIFIEE[28],
+                    "médico-social": CCN_LISTE_VERIFIEE[28],
+                    "lien social": CCN_LISTE_VERIFIEE[29],
+                    # Bâtiment & TP
+                    "bâtiment": CCN_LISTE_VERIFIEE[30],
+                    "construction": CCN_LISTE_VERIFIEE[31],
+                    "travaux publics": CCN_LISTE_VERIFIEE[33],
+                    # Industrie
+                    "métallurgie": CCN_LISTE_VERIFIEE[35],
+                    "industrie": CCN_LISTE_VERIFIEE[35],
+                    "chimie": CCN_LISTE_VERIFIEE[36],
+                    "textile": CCN_LISTE_VERIFIEE[37],
+                    "pharmacie industrielle": CCN_LISTE_VERIFIEE[38],
+                    "plasturgie": CCN_LISTE_VERIFIEE[39],
+                    # Agriculture
+                    "agriculture": CCN_LISTE_VERIFIEE[40],
+                    "agricole": CCN_LISTE_VERIFIEE[40],
                 }
 
-                def _ccn_par_mots_cles(poste_txt):
-                    poste_lower_local = poste_txt.lower()
-                    for mot_cle, ccn_val in _ccn_par_mot_cle.items():
-                        if mot_cle in poste_lower_local:
+                # Mots-clés du POSTE → utilisés seulement si le secteur ne matche pas
+                _ccn_par_mot_cle_poste = {
+                    # HCR
+                    "réceptionniste": CCN_LISTE_VERIFIEE[0],
+                    "femme de chambre": CCN_LISTE_VERIFIEE[0],
+                    "valet de chambre": CCN_LISTE_VERIFIEE[0],
+                    "serveur": CCN_LISTE_VERIFIEE[0],
+                    "barman": CCN_LISTE_VERIFIEE[0],
+                    "chef de rang": CCN_LISTE_VERIFIEE[0],
+                    # Restauration collective
+                    "agent de restauration": CCN_LISTE_VERIFIEE[1],
+                    "cuisinier collectif": CCN_LISTE_VERIFIEE[1],
+                    # Transport
+                    "chauffeur": CCN_LISTE_VERIFIEE[4],
+                    "conducteur": CCN_LISTE_VERIFIEE[4],
+                    "livreur": CCN_LISTE_VERIFIEE[4],
+                    "cariste": CCN_LISTE_VERIFIEE[4],
+                    "préparateur de commandes": CCN_LISTE_VERIFIEE[4],
+                    "magasinier": CCN_LISTE_VERIFIEE[4],
+                    # Commerce
+                    "vendeur": CCN_LISTE_VERIFIEE[8],
+                    "caissier": CCN_LISTE_VERIFIEE[7],
+                    "employé de rayon": CCN_LISTE_VERIFIEE[7],
+                    # Tertiaire
+                    "développeur": CCN_LISTE_VERIFIEE[12],
+                    "ingénieur logiciel": CCN_LISTE_VERIFIEE[12],
+                    "consultant": CCN_LISTE_VERIFIEE[12],
+                    "comptable": CCN_LISTE_VERIFIEE[18],
+                    "expert-comptable": CCN_LISTE_VERIFIEE[18],
+                    # Propreté
+                    "agent de propreté": CCN_LISTE_VERIFIEE[19],
+                    "agent d'entretien": CCN_LISTE_VERIFIEE[19],
+                    "agent de nettoyage": CCN_LISTE_VERIFIEE[19],
+                    "aide-soignant": CCN_LISTE_VERIFIEE[22],
+                    "auxiliaire de vie": CCN_LISTE_VERIFIEE[22],
+                    "aide à domicile": CCN_LISTE_VERIFIEE[22],
+                    "agent de sécurité": CCN_LISTE_VERIFIEE[20],
+                    # Social
+                    "formateur": CCN_LISTE_VERIFIEE[26],
+                    "animateur": CCN_LISTE_VERIFIEE[27],
+                    "éducateur spécialisé": CCN_LISTE_VERIFIEE[28],
+                    "moniteur éducateur": CCN_LISTE_VERIFIEE[28],
+                    "conseiller en insertion": CCN_LISTE_VERIFIEE[25],
+                    "conseiller emploi": CCN_LISTE_VERIFIEE[25],
+                    # Bâtiment
+                    "maçon": CCN_LISTE_VERIFIEE[30],
+                    "plombier": CCN_LISTE_VERIFIEE[30],
+                    "électricien": CCN_LISTE_VERIFIEE[30],
+                    "peintre en bâtiment": CCN_LISTE_VERIFIEE[30],
+                    "couvreur": CCN_LISTE_VERIFIEE[30],
+                    "carreleur": CCN_LISTE_VERIFIEE[30],
+                    "conducteur de travaux": CCN_LISTE_VERIFIEE[32],
+                    # Industrie
+                    "opérateur de production": CCN_LISTE_VERIFIEE[35],
+                    "technicien industriel": CCN_LISTE_VERIFIEE[35],
+                    "soudeur": CCN_LISTE_VERIFIEE[35],
+                    "tourneur fraiseur": CCN_LISTE_VERIFIEE[35],
+                }
+
+                def _ccn_par_mots_cles(poste_txt, secteur_txt=""):
+                    """Cherche d'abord dans le secteur (priorité haute),
+                    puis dans le poste si rien n'est trouvé."""
+                    secteur_lower = secteur_txt.lower().strip()
+                    poste_lower = poste_txt.lower().strip()
+                    # Priorité 1 : secteur déclaré par l'utilisateur
+                    for mot_cle, ccn_val in _ccn_par_secteur.items():
+                        if mot_cle in secteur_lower:
+                            return ccn_val
+                    # Priorité 2 : intitulé du poste
+                    for mot_cle, ccn_val in _ccn_par_mot_cle_poste.items():
+                        if mot_cle in poste_lower:
                             return ccn_val
                     return None
 
                 CCN_NON_DETERMINEE = "⚠️ Non déterminée automatiquement — à identifier manuellement"
 
                 with st.spinner("🔍 Détection de la Convention Collective applicable..."):
-                    ccn_ia = _ccn_par_mots_cles(saisie_poste)
+                    ccn_ia = _ccn_par_mots_cles(saisie_poste, secteur_ccn_contrat)
                     ccn_source = "mot-clé du poste" if ccn_ia else None
 
                     if ccn_ia is None:
@@ -4524,14 +4681,25 @@ elif st.session_state['page_active'] == "📋 GESTION ADMINISTRATIVE & RH":
                         try:
                             model_ccn = genai.GenerativeModel("gemini-3.7-flash")
                             options_texte = "\n".join(f"- {opt}" for opt in CCN_LISTE_VERIFIEE)
-                            prompt_ccn = f"""Voici une liste FERMÉE de conventions collectives nationales françaises :
+                            prompt_ccn = f"""Tu es un expert en droit du travail français spécialisé dans les conventions collectives.
+
+Voici une liste FERMÉE de conventions collectives nationales françaises (recopie EXACTEMENT le texte) :
 {options_texte}
 
-Pour le poste "{saisie_poste}" (secteur déclaré : "{secteur_ccn_contrat}", entreprise : "{nom_employeur}"),
-recopie EXACTEMENT, caractère pour caractère, l'une des lignes ci-dessus si elle correspond
-clairement à ce poste. Si AUCUNE des lignes ci-dessus ne correspond avec certitude, réponds
-uniquement le mot : AUCUNE
-N'invente jamais une convention, un nom ou un numéro qui n'est pas dans la liste fournie."""
+CONTEXTE DU CONTRAT :
+- Poste : "{saisie_poste}"
+- Secteur d'activité déclaré par l'employeur : "{secteur_ccn_contrat}"
+- Nom de l'entreprise : "{nom_employeur}"
+
+RÈGLES STRICTES :
+1. Le secteur déclaré EST la donnée la plus fiable — pars de lui en premier.
+2. Recopie EXACTEMENT, caractère pour caractère, la ligne qui correspond.
+3. Attention aux confusions fréquentes :
+   - "Restauration collective" (cantines, self d'entreprise) → IDCC 1266, PAS HCR
+   - "HCR" = uniquement hôtels, cafés, restaurants commerciaux ouverts au public
+   - "Aide à domicile / SAAD" → IDCC 2941 BAD, PAS services à la personne IDCC 3127
+4. Si AUCUNE ligne ne correspond avec certitude, réponds uniquement : AUCUNE
+5. N'invente JAMAIS un nom ou numéro absent de la liste."""
                             resp_ccn = model_ccn.generate_content(prompt_ccn)
                             reponse_ia = resp_ccn.text.strip()
                             # Validation stricte : la réponse doit correspondre mot pour mot à
