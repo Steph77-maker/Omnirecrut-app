@@ -2847,8 +2847,68 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
                 try:
                     reader_agent = PdfReader(fichier_cv_agent)
                     texte_cv_agent = "".join([p.extract_text() for p in reader_agent.pages if p.extract_text()])
-                    with st.spinner("Analyse en cours par l'agent IA..."):
-                        resultat_agent = analyser_cv_avec_agent(texte_cv_agent, secteur_cv_agent)
+
+                    # ── Progression animée — donne à voir le travail de l'IA ──────────
+                    _etapes = [
+                        ("🔍", "Lecture et structuration du CV..."),
+                        ("📋", "Extraction des compétences techniques..."),
+                        ("🔗", "Identification des compétences transférables..."),
+                        ("🧠", "Analyse comportementale du parcours..."),
+                        ("🎯", "Analyse des centres d'intérêt et engagements..."),
+                        ("🔗", "Évaluation de la cohérence du projet pro..."),
+                        ("📊", "Calcul du score d'employabilité..."),
+                        ("🏆", "Identification des métiers cibles..."),
+                        ("💾", "Enregistrement du profil dans le vivier..."),
+                    ]
+                    _placeholder = st.empty()
+                    _barre = st.progress(0)
+
+                    import threading, time as _time
+
+                    _resultat_agent_container = {}
+                    _erreur_container = {}
+
+                    def _lancer_analyse():
+                        try:
+                            _resultat_agent_container["res"] = analyser_cv_avec_agent(texte_cv_agent, secteur_cv_agent)
+                        except Exception as _e:
+                            _erreur_container["err"] = _e
+
+                    _thread = threading.Thread(target=_lancer_analyse)
+                    _thread.start()
+
+                    _i = 0
+                    while _thread.is_alive():
+                        _etape = _etapes[min(_i, len(_etapes) - 1)]
+                        _placeholder.markdown(
+                            f"""<div style="background:#1e2a3a; border-left:3px solid #2d6cdf;
+                                border-radius:6px; padding:12px 16px; color:#94b8e8; font-size:13px;">
+                                {_etape[0]} <strong style="color:#c8dff8;">{_etape[1]}</strong>
+                            </div>""",
+                            unsafe_allow_html=True,
+                        )
+                        _progression = min(int((_i + 1) / len(_etapes) * 90), 90)
+                        _barre.progress(_progression)
+                        _time.sleep(3.5)
+                        _i += 1
+
+                    _thread.join()
+                    _barre.progress(100)
+                    _placeholder.markdown(
+                        """<div style="background:#0f2d1a; border-left:3px solid #16a34a;
+                            border-radius:6px; padding:12px 16px; color:#86efac; font-size:13px;">
+                            ✅ <strong>Analyse complète — enregistrement dans le vivier...</strong>
+                        </div>""",
+                        unsafe_allow_html=True,
+                    )
+                    _time.sleep(1)
+                    _placeholder.empty()
+                    _barre.empty()
+
+                    if "err" in _erreur_container:
+                        raise _erreur_container["err"]
+
+                    resultat_agent = _resultat_agent_container["res"]
                     incrémenter_quota_ia(st.session_state.get("user_email"))
                     st.session_state["dernier_rapport_agent"] = resultat_agent
                     # Mémorisation de la suggestion de secteur pour le prochain CV
