@@ -1112,63 +1112,54 @@ Valeur stricte parmi : "Restauration / Hôtellerie" | "Tertiaire / Bureau / PME"
 "Transport / Logistique" | "Bâtiment / TP" | "Industrie / Technique" | "Autre"
 
 ━━━ ENREGISTREMENT ━━━
-Appelle SYSTÉMATIQUEMENT et UNE SEULE FOIS save_candidate_to_sqlite, tous champs remplis à plat.
+Retourne UNIQUEMENT un objet JSON valide avec exactement ces clés (sans markdown, sans texte avant ou après) :
+{
+  "nom_complet": "string",
+  "hard_skills": ["string"],
+  "diplomes": ["string"],
+  "soft_skills_transferables": ["string"],
+  "traits_dominants": ["string"],
+  "indices_parcours_pro": "string",
+  "indices_centres_interet": "string",
+  "coherence_projet_pro": "string",
+  "metiers_cibles": ["string"],
+  "pourcentage_adequation": 0,
+  "compte_rendu": "string",
+  "secteur_detecte": "string"
+}
 """
 
-# ⚠️ PERFORMANCE : ce modèle était instancié au niveau module, donc reconstruit
-# à CHAQUE rerun Streamlit. Désormais construit une seule fois par processus,
-# et seulement au premier usage réel de l'agent d'analyse de CV.
+# Modèle léger sans function calling — JSON pur, enregistrement côté Python
 @st.cache_resource(show_spinner=False)
 def _get_agent_model():
     return genai.GenerativeModel(
         model_name="gemini-3.7-flash",
         system_instruction=_SYSTEM_PROMPT_AGENT,
-        tools=[_get_tool_save_candidate()],
         generation_config={"temperature": 0.3},
     )
 
 
 def analyser_cv_avec_agent(texte_cv: str, secteur_metier: str, max_tentatives: int = 3) -> dict:
-    """Lance l'agent sur un CV brut. Le tool enregistre lui-même le candidat en base.
-    Retourne {'compte_rendu': str, 'donnees_structurees': dict | None}.
-    Réessaie automatiquement en cas de MALFORMED_FUNCTION_CALL (limite connue des modèles flash
-    sur des schémas de tools complexes)."""
+    """Analyse un CV et retourne un JSON structuré. L'enregistrement en base
+    est fait directement par Python — plus de function calling, plus de double
+    aller-retour avec l'API Gemini."""
     for tentative in range(1, max_tentatives + 1):
         try:
-            chat = _get_agent_model().start_chat(enable_automatic_function_calling=False)
-            response = chat.send_message(
-                f"Voici un CV brut à analyser et à enregistrer dans le vivier :\n\n{texte_cv}"
+            model = _get_agent_model()
+            response = model.generate_content(
+                f"Voici un CV brut à analyser :\n\n{texte_cv}"
             )
-            donnees_structurees = None
-
-            while True:
-                finish_reason = response.candidates[0].finish_reason
-                if str(finish_reason).endswith("MALFORMED_FUNCTION_CALL"):
-                    raise ValueError("MALFORMED_FUNCTION_CALL")
-
-                function_call = next(
-                    (p.function_call for p in response.candidates[0].content.parts if p.function_call),
-                    None,
-                )
-                if function_call is None:
-                    return {"compte_rendu": response.text, "donnees_structurees": donnees_structurees}
-
-                fn_name = function_call.name
-                fn_args = _proto_to_python(dict(function_call.args))
-                if fn_name == "save_candidate_to_sqlite":
-                    fn_args["secteur_metier"] = secteur_metier
-                    fn_args["cv_texte"] = texte_cv
-                donnees_structurees = fn_args
-
-                result = _AGENT_TOOLS.get(
-                    fn_name, lambda **_: {"status": "error", "message": "Fonction inconnue"}
-                )(**fn_args)
-
-                response = chat.send_message(
-                    genai.protos.Content(parts=[genai.protos.Part(
-                        function_response=genai.protos.FunctionResponse(name=fn_name, response={"result": result})
-                    )])
-                )
+            texte = response.text.strip()
+            # Nettoyer les éventuels blocs markdown
+            if texte.startswith("```"):
+                texte = re.sub(r"^```[a-z]*\n?", "", texte)
+                texte = re.sub(r"\n?```$", "", texte.strip())
+            donnees = json.loads(texte)
+            # Enregistrement direct en base — sans passer par le function calling
+            donnees["secteur_metier"] = secteur_metier
+            donnees["cv_texte"] = texte_cv
+            _save_candidate_to_sqlite(**donnees)
+            return {"compte_rendu": donnees.get("compte_rendu", ""), "donnees_structurees": donnees}
         except Exception as e:
             if tentative == max_tentatives:
                 raise
