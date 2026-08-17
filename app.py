@@ -1097,8 +1097,39 @@ traits_dominants : 3 à 5 traits, chacun en 1 phrase percutante + source dans le
 
 coherence_projet_pro : 3 phrases : fil conducteur, maturité du projet, 1-2 questions pour l'entretien.
 
+━━━ COUCHE 2b — ANALYSE VISUELLE DU CV (si image fournie) ━━━
+Si une image du CV est fournie, analyse ces éléments visuels et ce qu'ils révèlent sur le candidat :
+
+MISE EN PAGE :
+- CV dense (tout rempli) → profil exhaustif, peut avoir du mal à prioriser
+- CV aéré, espaces blancs → sens de l'essentiel, clarté de pensée, profil organisé
+- Structure non conventionnelle → pensée originale, profil atypique, créativité assumée
+- Structure très classique → profil traditionnel, cherche la conformité et la sécurité
+
+COULEURS :
+- Noir et blanc pur → sobre, discret, traditionnel, ou profil très corporate
+- Couleurs vives assumées → confiance en soi, créativité, profil expressif
+- Couleurs douces/pastel → sensibilité, approche relationnelle
+- Une seule couleur d'accent → sens de l'équilibre, professionnel sans être rigide
+
+TYPOGRAPHIE :
+- Police classique (Times, Arial) → conformiste, sécurisant, traditionnel
+- Police moderne sans serif (Helvetica, Calibri) → contemporain, efficace, orienté résultats
+- Police originale ou mixte → créatif, souci de différenciation
+- Texte très petit pour tout faire tenir → perfectionniste, peut-être anxieux de l'omission
+
+ÉLÉMENTS GRAPHIQUES :
+- Photo présente → à l'aise avec son image, profil extraverti potentiellement
+- Sans photo → focus sur le contenu, discrétion sur la personne
+- Icônes, pictogrammes → maîtrise des outils design, sens de la communication visuelle
+- Graphiques (barres de compétences) → profil orienté data ou marketing de soi
+
+Synthétise en 2-3 phrases dans le champ "style_cv" : ce que les choix visuels révèlent sur le candidat,
+en croisant avec l'analyse comportementale du parcours.
+Si aucune image n'est fournie, mets "Non analysé — CV fourni en texte uniquement."
+
 ━━━ COUCHE 3 — PROJECTION ━━━
-metiers_cibles : 4 à 6 métiers concrets classés par pertinence (nourris par l'analyse comportementale).
+metiers_cibles : 4 à 6 métiers concrets classés par pertinence (nourris par l'analyse comportementale et le style visuel).
 pourcentage_adequation : score 0-100 pondéré :
 parcours (35%) + compétences transférables (30%) + projet pro (20%) + centres d'intérêt (15%)
 
@@ -1125,7 +1156,8 @@ Retourne UNIQUEMENT un objet JSON valide avec exactement ces clés (sans markdow
   "metiers_cibles": ["string"],
   "pourcentage_adequation": 0,
   "compte_rendu": "string",
-  "secteur_detecte": "string"
+  "secteur_detecte": "string",
+  "style_cv": "string"
 }
 """
 
@@ -1139,16 +1171,30 @@ def _get_agent_model():
     )
 
 
-def analyser_cv_avec_agent(texte_cv: str, secteur_metier: str, max_tentatives: int = 3) -> dict:
+def analyser_cv_avec_agent(texte_cv: str, secteur_metier: str, max_tentatives: int = 3,
+                           image_cv_bytes: bytes | None = None) -> dict:
     """Analyse un CV et retourne un JSON structuré. L'enregistrement en base
     est fait directement par Python — plus de function calling, plus de double
-    aller-retour avec l'API Gemini."""
+    aller-retour avec l'API Gemini.
+    Si image_cv_bytes est fourni, Gemini analyse aussi le style visuel du CV."""
     for tentative in range(1, max_tentatives + 1):
         try:
             model = _get_agent_model()
-            response = model.generate_content(
-                f"Voici un CV brut à analyser :\n\n{texte_cv}"
-            )
+            # Construction du contenu multimodal : texte + image si disponible
+            contenu = [f"Voici un CV brut à analyser :\n\n{texte_cv}"]
+            if image_cv_bytes:
+                import base64
+                contenu = [
+                    f"Voici un CV à analyser. Tu disposes à la fois du texte extrait et d'une image "
+                    f"de la première page pour l'analyse visuelle.\n\nTEXTE DU CV :\n{texte_cv}",
+                    {
+                        "inline_data": {
+                            "mime_type": "image/png",
+                            "data": base64.b64encode(image_cv_bytes).decode("utf-8"),
+                        }
+                    },
+                ]
+            response = model.generate_content(contenu)
             texte = response.text.strip()
             # Nettoyer les éventuels blocs markdown
             if texte.startswith("```"):
@@ -2427,6 +2473,7 @@ def afficher_profil_candidat_enrichi(infos_candidat, conn):
     indices_parcours = profil_comportemental.get("indices_parcours_pro", "")
     indices_centres  = profil_comportemental.get("indices_centres_interet", "")
     coherence_projet = profil_comportemental.get("coherence_projet_pro", "")
+    style_cv         = profil_comportemental.get("style_cv", "")
 
     # ── Échappement HTML de toutes les variables issues de la BDD ─────────────
     # Évite le XSS stocké : un CV contenant du HTML/JS malveillant ne serait pas
@@ -2437,6 +2484,7 @@ def afficher_profil_candidat_enrichi(infos_candidat, conn):
     indices_parcours_h = html.escape(str(indices_parcours or ""))
     indices_centres_h  = html.escape(str(indices_centres or ""))
     coherence_projet_h = html.escape(str(coherence_projet or ""))
+    style_cv_h         = html.escape(str(style_cv or ""))
     traits_dominants_h = [html.escape(str(t)) for t in traits_dominants]
     hard_skills_h      = [html.escape(str(hs)) for hs in hard_skills]
     transferables_h    = [html.escape(str(c)) for c in transferables]
@@ -2556,6 +2604,18 @@ def afficher_profil_candidat_enrichi(infos_candidat, conn):
             <div style="background:#0f2027; border:1px solid #2563eb; border-radius:8px;
                         padding:14px; color:#93c5fd; font-size:13px; line-height:1.6;">
                 {coherence_projet_h}</div>
+        """, unsafe_allow_html=True)
+
+    # ── Style visuel du CV ────────────────────────────────────────────────────
+    if style_cv_h and "Non analysé" not in style_cv_h:
+        st.markdown("#### 🎨 Lecture du style visuel du CV")
+        st.markdown(f"""
+            <div style="background:#1a1a2e; border:1px solid #7c3aed; border-radius:8px;
+                        padding:14px; color:#c4b5fd; font-size:13px; line-height:1.6;
+                        display:flex; gap:12px; align-items:flex-start;">
+                <span style="font-size:20px; flex-shrink:0;">🖼️</span>
+                <span>{style_cv_h}</span>
+            </div>
         """, unsafe_allow_html=True)
     st.markdown("---")
 
@@ -2839,6 +2899,23 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
                     reader_agent = PdfReader(fichier_cv_agent)
                     texte_cv_agent = "".join([p.extract_text() for p in reader_agent.pages if p.extract_text()])
 
+                    # ── Extraction image première page pour analyse visuelle ───────────
+                    _image_cv_bytes = None
+                    try:
+                        import fitz  # pymupdf
+                        import io
+                        fichier_cv_agent.seek(0)
+                        _pdf_bytes = fichier_cv_agent.read()
+                        _doc = fitz.open(stream=_pdf_bytes, filetype="pdf")
+                        _page = _doc[0]
+                        _pix = _page.get_pixmap(dpi=120)
+                        _buf = io.BytesIO()
+                        _buf.write(_pix.tobytes("png"))
+                        _image_cv_bytes = _buf.getvalue()
+                        _doc.close()
+                    except Exception:
+                        _image_cv_bytes = None  # Pas bloquant — analyse texte seule si échec
+
                     # ── Progression animée — donne à voir le travail de l'IA ──────────
                     _etapes = [
                         ("🔍", "Lecture et structuration du CV..."),
@@ -2861,7 +2938,10 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
 
                     def _lancer_analyse():
                         try:
-                            _resultat_agent_container["res"] = analyser_cv_avec_agent(texte_cv_agent, secteur_cv_agent)
+                            _resultat_agent_container["res"] = analyser_cv_avec_agent(
+                                texte_cv_agent, secteur_cv_agent,
+                                image_cv_bytes=_image_cv_bytes
+                            )
                         except Exception as _e:
                             _erreur_container["err"] = _e
 
