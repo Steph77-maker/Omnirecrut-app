@@ -884,6 +884,7 @@ def _save_candidate_to_sqlite(**kwargs) -> dict:
     # écrit en base directement : c'est le secteur_metier (choix utilisateur
     # confirmé) qui fait foi pour la colonne secteur_metier de la table.
     secteur_detecte          = kwargs.get("secteur_detecte", "")
+    style_cv                 = kwargs.get("style_cv", "Non analysé — CV fourni en texte uniquement.")
     """Tool exécuté par l'agent : enregistre le profil enrichi dans la table candidats existante.
     NB : la colonne 'profil_riasec' est conservée pour compatibilité base de données, mais stocke
     désormais un profil comportemental basé sur le parcours et les centres d'intérêt (pas un test
@@ -902,6 +903,7 @@ def _save_candidate_to_sqlite(**kwargs) -> dict:
         "indices_parcours_pro": indices_parcours_pro,
         "indices_centres_interet": indices_centres_interet,
         "coherence_projet_pro": coherence_projet_pro,
+        "style_cv": style_cv,
     }
 
     c.execute(
@@ -3103,27 +3105,42 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
                 st.markdown("---")
                 st.subheader("⚡ Suivi & Actions Administratives")
                 liste_candidats_filtres = df_vivier["Nom"].tolist()
-                candidat_selectionne = st.selectbox("Sélectionnez un candidat pour gérer ses démarches :", liste_candidats_filtres)
+                # Key basée sur la liste pour forcer le reset du selectbox quand les candidats changent
+                _key_select = f"select_candidat_{hash(tuple(liste_candidats_filtres))}"
+                candidat_selectionne = st.selectbox(
+                    "Sélectionnez un candidat pour gérer ses démarches :",
+                    liste_candidats_filtres,
+                    key=_key_select,
+                )
 
                 if candidat_selectionne:
-                    infos_candidat = df_vivier[df_vivier["Nom"] == candidat_selectionne].iloc[0]
+                    # Toujours récupérer les infos depuis le DataFrame avec le nom exact sélectionné
+                    _mask = df_vivier["Nom"] == candidat_selectionne
+                    if _mask.any():
+                        infos_candidat = df_vivier[_mask].iloc[0]
+                    else:
+                        st.warning("Candidat introuvable dans le vivier filtré.")
+                        infos_candidat = None
+
+                if candidat_selectionne and infos_candidat is not None:
                     id_selectionne = int(infos_candidat["ID"])
                     statut_actuel = infos_candidat["Statut"]
-                    email_candidat = df_vivier[df_vivier["Nom"] == candidat_selectionne].iloc[0]["Email_Brut"]
+                    email_candidat = infos_candidat["Email_Brut"]
                     score_suivi = infos_candidat["Score_Affiche"]
-                    
+                    nom_affiche = infos_candidat["Nom"]
+                    poste_affiche = infos_candidat["Poste"]
+
                     col_info, col_bouton_urssaf = st.columns([2, 1])
                     with col_info:
-                        st.markdown(f"👤 **Profil :** {candidat_selectionne} — *{infos_candidat['Poste']}*")
+                        st.markdown(f"👤 **Profil :** {nom_affiche} — *{poste_affiche}*")
                         st.markdown(f"📌 **Statut :** `{statut_actuel}` | **Score de correspondance :** `{score_suivi}`")
-
-                    afficher_profil_candidat_enrichi(infos_candidat, conn)
-                    
                     with col_bouton_urssaf:
                         if statut_actuel == "En mission":
                             st.link_button("📝 Faire la DPAE (URSSAF)", url="https://www.declaration.urssaf.fr/", use_container_width=True, type="primary")
                         else:
                             st.link_button("🌐 Accéder à l'URSSAF", url="https://www.declaration.urssaf.fr/", use_container_width=True)
+
+                    afficher_profil_candidat_enrichi(infos_candidat, conn)
                     
                     # --- ZONE DE SUPPRESSION (ÉPURÉE) ---
                     confirmer_suppression = st.checkbox(f"Je confirme vouloir supprimer définitivement {candidat_selectionne} de la base", key=f"conf_del_{id_selectionne}")
