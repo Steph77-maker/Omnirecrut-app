@@ -2191,7 +2191,8 @@ st.session_state['page_active'] = menu
 # ==============================================================================
 def generer_pdf_candidat(nom, poste, score_global, traits_dominants,
                           indices_parcours, indices_centres, coherence_projet,
-                          hard_skills, transferables, metiers_cibles, avis_complet):
+                          hard_skills, transferables, metiers_cibles, avis_complet,
+                          style_cv=""):
     """Génère un PDF professionnel du dossier candidat OmniRecrut IA."""
     from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors
@@ -2342,6 +2343,19 @@ def generer_pdf_candidat(nom, poste, score_global, traits_dominants,
             ('BOX', (0,0), (-1,-1), 0.5, BLEU2),
         ]))
         story.append(coh)
+
+    # ── Style visuel du CV ────────────────────────────────────────────────────
+    if style_cv and "Non analysé" not in str(style_cv):
+        story.append(Spacer(1, 0.2*cm))
+        story.append(Paragraph("🎨  Lecture du style visuel du CV", h2))
+        sty = Table([[Paragraph(str(style_cv), corps)]], colWidths=[17*cm])
+        sty.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#f5f0ff")),
+            ('TOPPADDING', (0,0), (-1,-1), 8), ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+            ('LEFTPADDING', (0,0), (-1,-1), 10),
+            ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor("#7c3aed")),
+        ]))
+        story.append(sty)
     story.append(Spacer(1, 0.3*cm))
 
     # ── Compétences ───────────────────────────────────────────────────────────
@@ -2528,7 +2542,8 @@ def afficher_profil_candidat_enrichi(infos_candidat, conn):
                 hard_skills=hard_skills,
                 transferables=transferables,
                 metiers_cibles=metiers_cibles,
-                avis_complet=avis_complet
+                avis_complet=avis_complet,
+                style_cv=style_cv
             )
             nom_fichier = f"OmniRecrut_{nom.replace(' ', '_')}.pdf"
             st.download_button(
