@@ -7,3 +7,4 @@ reportlab
 bcrypt
 psycopg2-binary
 cryptography
+pymupdf
