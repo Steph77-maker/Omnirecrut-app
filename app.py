@@ -743,7 +743,35 @@ if _qp_token:
     """, unsafe_allow_html=True)
     st.markdown("""
         <div style="text-align:center; padding:40px 0 20px 0;">
-            <p style="color:#a3b1cc; font-size:18px; font-weight:600;">Activation de votre compte abonné</p>
+            <svg width="80" height="70" viewBox="0 0 680 480" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <linearGradient id="lg1b" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#1a3d8a"/><stop offset="100%" stop-color="#0a1c42"/></linearGradient>
+  <linearGradient id="lg2b" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#142f72"/><stop offset="100%" stop-color="#080f28"/></linearGradient>
+  <linearGradient id="lg3b" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#0e2255"/><stop offset="100%" stop-color="#050c1e"/></linearGradient>
+  <linearGradient id="lg6b" x1="0.5" y1="0" x2="0.5" y2="1"><stop offset="0%" stop-color="#ffffff" stop-opacity="0.12"/><stop offset="100%" stop-color="#ffffff" stop-opacity="0"/></linearGradient>
+</defs>
+<polygon points="340,80 468,153 468,299 340,372 212,299 212,153" fill="url(#lg1b)" stroke="#2a5fc0" stroke-width="1.5"/>
+<line x1="340" y1="80" x2="340" y2="226" stroke="#4a80d8" stroke-width="0.6" opacity="0.5"/>
+<line x1="468" y1="153" x2="340" y2="226" stroke="#3a6ab8" stroke-width="0.6" opacity="0.4"/>
+<line x1="468" y1="299" x2="340" y2="226" stroke="#2a5aa0" stroke-width="0.6" opacity="0.35"/>
+<line x1="340" y1="372" x2="340" y2="226" stroke="#1a4888" stroke-width="0.6" opacity="0.3"/>
+<line x1="212" y1="299" x2="340" y2="226" stroke="#2a5aa0" stroke-width="0.6" opacity="0.35"/>
+<line x1="212" y1="153" x2="340" y2="226" stroke="#3a6ab8" stroke-width="0.6" opacity="0.4"/>
+<polygon points="340,110 438,165 438,277 340,332 242,277 242,165" fill="url(#lg2b)" stroke="#2050a0" stroke-width="1"/>
+<polygon points="340,136 412,179 412,257 340,300 268,257 268,179" fill="url(#lg3b)" stroke="#183888" stroke-width="0.8"/>
+<circle cx="340" cy="209" r="10" fill="#2a58b8" opacity="0.3"/>
+<circle cx="340" cy="209" r="4" fill="#4a80e0" opacity="0.6"/>
+<circle cx="340" cy="209" r="2" fill="#8ac4ff" opacity="0.9"/>
+<polygon points="340,80 468,153 468,210 340,155 212,210 212,153" fill="url(#lg6b)"/>
+<line x1="212" y1="153" x2="340" y2="80" stroke="#7ab8ff" stroke-width="2" opacity="0.9"/>
+<line x1="340" y1="80" x2="468" y2="153" stroke="#4a88d8" stroke-width="1.2" opacity="0.7"/>
+<circle cx="340" cy="80" r="3" fill="#8ac4ff" opacity="0.85"/>
+<text x="340" y="241" text-anchor="middle" font-family="sans-serif" font-weight="700" font-size="38" fill="#c8dff8" letter-spacing="4">OMNI</text>
+<text x="340" y="270" text-anchor="middle" font-family="sans-serif" font-weight="300" font-size="22" fill="#6a9ad4" letter-spacing="7">RECRUT</text>
+<line x1="298" y1="280" x2="382" y2="280" stroke="#3a7ae0" stroke-width="1"/>
+<text x="340" y="300" text-anchor="middle" font-family="sans-serif" font-weight="700" font-size="16" fill="#5a9ae0" letter-spacing="6">IA</text>
+</svg>
+            <p style="color:#a3b1cc; font-size:18px; font-weight:600; margin-top:8px;">Activation de votre compte abonné</p>
         </div>
     """, unsafe_allow_html=True)
 
@@ -1248,7 +1276,7 @@ def _get_agent_model():
     return genai.GenerativeModel(
         model_name="gemini-3.7-flash",
         system_instruction=_SYSTEM_PROMPT_AGENT,
-        generation_config={"temperature": 0.3},
+        generation_config={"temperature": 0.3, "max_output_tokens": 4096},
     )
 
 
@@ -2023,7 +2051,35 @@ st.markdown(
 st.markdown(
     """
     <div style="text-align: center; padding: 10px 0px 25px 0px;">
-        <p style="color: #a3b1cc; font-size: 16px; margin-top: 0px; font-weight: 300;">
+        <svg width="80" height="70" viewBox="0 0 680 480" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <linearGradient id="lg1b" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#1a3d8a"/><stop offset="100%" stop-color="#0a1c42"/></linearGradient>
+  <linearGradient id="lg2b" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#142f72"/><stop offset="100%" stop-color="#080f28"/></linearGradient>
+  <linearGradient id="lg3b" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#0e2255"/><stop offset="100%" stop-color="#050c1e"/></linearGradient>
+  <linearGradient id="lg6b" x1="0.5" y1="0" x2="0.5" y2="1"><stop offset="0%" stop-color="#ffffff" stop-opacity="0.12"/><stop offset="100%" stop-color="#ffffff" stop-opacity="0"/></linearGradient>
+</defs>
+<polygon points="340,80 468,153 468,299 340,372 212,299 212,153" fill="url(#lg1b)" stroke="#2a5fc0" stroke-width="1.5"/>
+<line x1="340" y1="80" x2="340" y2="226" stroke="#4a80d8" stroke-width="0.6" opacity="0.5"/>
+<line x1="468" y1="153" x2="340" y2="226" stroke="#3a6ab8" stroke-width="0.6" opacity="0.4"/>
+<line x1="468" y1="299" x2="340" y2="226" stroke="#2a5aa0" stroke-width="0.6" opacity="0.35"/>
+<line x1="340" y1="372" x2="340" y2="226" stroke="#1a4888" stroke-width="0.6" opacity="0.3"/>
+<line x1="212" y1="299" x2="340" y2="226" stroke="#2a5aa0" stroke-width="0.6" opacity="0.35"/>
+<line x1="212" y1="153" x2="340" y2="226" stroke="#3a6ab8" stroke-width="0.6" opacity="0.4"/>
+<polygon points="340,110 438,165 438,277 340,332 242,277 242,165" fill="url(#lg2b)" stroke="#2050a0" stroke-width="1"/>
+<polygon points="340,136 412,179 412,257 340,300 268,257 268,179" fill="url(#lg3b)" stroke="#183888" stroke-width="0.8"/>
+<circle cx="340" cy="209" r="10" fill="#2a58b8" opacity="0.3"/>
+<circle cx="340" cy="209" r="4" fill="#4a80e0" opacity="0.6"/>
+<circle cx="340" cy="209" r="2" fill="#8ac4ff" opacity="0.9"/>
+<polygon points="340,80 468,153 468,210 340,155 212,210 212,153" fill="url(#lg6b)"/>
+<line x1="212" y1="153" x2="340" y2="80" stroke="#7ab8ff" stroke-width="2" opacity="0.9"/>
+<line x1="340" y1="80" x2="468" y2="153" stroke="#4a88d8" stroke-width="1.2" opacity="0.7"/>
+<circle cx="340" cy="80" r="3" fill="#8ac4ff" opacity="0.85"/>
+<text x="340" y="241" text-anchor="middle" font-family="sans-serif" font-weight="700" font-size="38" fill="#c8dff8" letter-spacing="4">OMNI</text>
+<text x="340" y="270" text-anchor="middle" font-family="sans-serif" font-weight="300" font-size="22" fill="#6a9ad4" letter-spacing="7">RECRUT</text>
+<line x1="298" y1="280" x2="382" y2="280" stroke="#3a7ae0" stroke-width="1"/>
+<text x="340" y="300" text-anchor="middle" font-family="sans-serif" font-weight="700" font-size="16" fill="#5a9ae0" letter-spacing="6">IA</text>
+</svg>
+        <p style="color: #a3b1cc; font-size: 16px; margin-top: 4px; font-weight: 300;">
             Solution Tout-en-Un de Sourcing Intelligent & Gestion de Vivier
         </p>
     </div>
@@ -3020,7 +3076,9 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
                         _pdf_bytes = fichier_cv_agent.read()
                         _doc = fitz.open(stream=_pdf_bytes, filetype="pdf")
                         _page = _doc[0]
-                        _pix = _page.get_pixmap(dpi=120)
+                        # 72 DPI suffisant pour l'analyse visuelle (couleurs, mise en page)
+                        # Réduit la taille de l'image de ~60% → Gemini répond plus vite
+                        _pix = _page.get_pixmap(dpi=72)
                         _buf = io.BytesIO()
                         _buf.write(_pix.tobytes("png"))
                         _image_cv_bytes = _buf.getvalue()
