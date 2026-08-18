@@ -277,12 +277,17 @@ def incrémenter_quota_ia(email_utilisateur=None):
 def reinitialiser_quota_ia(id_organisation):
     """Remet a 0 le compteur de requetes IA d'une organisation.
     Recoit un IDENTIFIANT d'organisation (et non un e-mail) : c'est ce que lui
-    transmet le bouton de l'onglet Abonnements."""
+    transmet le bouton de l'onglet Abonnements.
+    Utilise une connexion fraîche sans app.org_id pour pouvoir modifier
+    n'importe quelle organisation (pas seulement celle de l'admin)."""
     try:
-        conn_q = get_connection()
-        c_q = conn_q.cursor()
-        c_q.execute("UPDATE organisations SET nb_requetes_ia = 0 WHERE id = %s", (id_organisation,))
-        conn_q.commit()
+        conn_q = _ouvrir_connexion_pg()
+        try:
+            c_q = conn_q.cursor()
+            c_q.execute("UPDATE organisations SET nb_requetes_ia = 0 WHERE id = %s", (id_organisation,))
+            conn_q.commit()
+        finally:
+            conn_q.close()
         try:
             _charger_quota_utilisateur.clear()
         except NameError:
@@ -5490,13 +5495,16 @@ if st.session_state.get("page_active") == "🔐 ABONNEMENTS & CLIENTS":
                     if st.button(f"🔗 Générer un lien d'activation", key=f"gen_token_{o_id}", use_container_width=True):
                         try:
                             _token_new = secrets.token_urlsafe(32)
-                            conn_tok_gen = get_connection()
-                            c_tok_gen = conn_tok_gen.cursor()
-                            c_tok_gen.execute(
-                                "UPDATE organisations SET token_creation_compte = %s WHERE id = %s",
-                                (_token_new, o_id)
-                            )
-                            conn_tok_gen.commit()
+                            conn_tok_gen = _ouvrir_connexion_pg()
+                            try:
+                                c_tok_gen = conn_tok_gen.cursor()
+                                c_tok_gen.execute(
+                                    "UPDATE organisations SET token_creation_compte = %s WHERE id = %s",
+                                    (_token_new, o_id)
+                                )
+                                conn_tok_gen.commit()
+                            finally:
+                                conn_tok_gen.close()
                             st.session_state[f"lien_activation_{o_id}"] = _token_new
                         except Exception as e_tg:
                             st.error(f"Erreur : {e_tg}")
@@ -5514,22 +5522,28 @@ if st.session_state.get("page_active") == "🔐 ABONNEMENTS & CLIENTS":
                 with cb1:
                     if st.button("💾 Appliquer", key=f"maj_org_{o_id}", use_container_width=True, type="primary"):
                         try:
-                            if jours_prolong > 0:
-                                base_date = aujourdhui
-                                if o_fin:
-                                    d_ref = o_fin if isinstance(o_fin, datetime.date) else datetime.date.fromisoformat(str(o_fin))
-                                    base_date = max(d_ref, aujourdhui)
-                                nouvelle_fin = (base_date + datetime.timedelta(days=int(jours_prolong))).isoformat()
-                                c.execute(
-                                    "UPDATE organisations SET statut_abonnement=%s, quota_max=%s, date_fin_essai=%s WHERE id=%s",
-                                    (nouveau_statut_org, int(nouveau_quota_org), nouvelle_fin, o_id),
-                                )
-                            else:
-                                c.execute(
-                                    "UPDATE organisations SET statut_abonnement=%s, quota_max=%s WHERE id=%s",
-                                    (nouveau_statut_org, int(nouveau_quota_org), o_id),
-                                )
-                            conn.commit()
+                            # Connexion fraîche sans app.org_id pour modifier n'importe quelle org
+                            conn_maj = _ouvrir_connexion_pg()
+                            try:
+                                c_maj = conn_maj.cursor()
+                                if jours_prolong > 0:
+                                    base_date = aujourdhui
+                                    if o_fin:
+                                        d_ref = o_fin if isinstance(o_fin, datetime.date) else datetime.date.fromisoformat(str(o_fin))
+                                        base_date = max(d_ref, aujourdhui)
+                                    nouvelle_fin = (base_date + datetime.timedelta(days=int(jours_prolong))).isoformat()
+                                    c_maj.execute(
+                                        "UPDATE organisations SET statut_abonnement=%s, quota_max=%s, date_fin_essai=%s WHERE id=%s",
+                                        (nouveau_statut_org, int(nouveau_quota_org), nouvelle_fin, o_id),
+                                    )
+                                else:
+                                    c_maj.execute(
+                                        "UPDATE organisations SET statut_abonnement=%s, quota_max=%s WHERE id=%s",
+                                        (nouveau_statut_org, int(nouveau_quota_org), o_id),
+                                    )
+                                conn_maj.commit()
+                            finally:
+                                conn_maj.close()
                             _charger_organisations_admin.clear()
                             st.success(f"✅ Compte « {o_nom} » mis à jour.")
                             st.rerun()
@@ -5558,11 +5572,15 @@ if st.session_state.get("page_active") == "🔐 ABONNEMENTS & CLIENTS":
                     with col_oui:
                         if st.button("✅ Oui, supprimer", key=f"suppr_oui_{o_id}", use_container_width=True, type="primary"):
                             try:
-                                conn_del_org = get_connection()
-                                c_del_org = conn_del_org.cursor()
-                                c_del_org.execute("DELETE FROM utilisateurs WHERE organisation_id = %s", (o_id,))
-                                c_del_org.execute("DELETE FROM organisations WHERE id = %s AND est_organisation_admin = FALSE", (o_id,))
-                                conn_del_org.commit()
+                                # Connexion fraîche sans app.org_id pour supprimer n'importe quelle org
+                                conn_del_org = _ouvrir_connexion_pg()
+                                try:
+                                    c_del_org = conn_del_org.cursor()
+                                    c_del_org.execute("DELETE FROM utilisateurs WHERE organisation_id = %s", (o_id,))
+                                    c_del_org.execute("DELETE FROM organisations WHERE id = %s AND est_organisation_admin = FALSE", (o_id,))
+                                    conn_del_org.commit()
+                                finally:
+                                    conn_del_org.close()
                                 _charger_organisations_admin.clear()
                                 _charger_prospects_liste.clear()
                                 _charger_prospects_quotas.clear()
