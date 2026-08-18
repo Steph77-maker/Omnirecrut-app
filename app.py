@@ -1023,26 +1023,15 @@ def _save_candidate_to_sqlite(**kwargs) -> dict:
     candidat_id = c.fetchone()[0]
     conn.commit()
 
-    # ── Matching asynchrone — ne bloque plus l'affichage du candidat ──────────
-    # Le matching Gemini (~15-20s) tourne en arrière-plan dans un thread daemon.
-    # Le candidat apparaît immédiatement dans le vivier, les alertes arrivent
-    # quelques secondes plus tard dans l'onglet Alertes de matching.
-    import threading as _threading
-    def _matching_background(cid, nom, poste, comp, secteur):
-        try:
-            _matcher_candidat_vs_besoins_ouverts(cid, nom, poste, comp, secteur)
-        except Exception:
-            pass  # Silencieux — les alertes sont bonus, pas bloquantes
-
-    _t = _threading.Thread(
-        target=_matching_background,
-        args=(candidat_id, nom_complet, poste_cible, competences_resume, secteur_metier),
-        daemon=True,
-    )
-    _t.start()
-
-    message = f"Candidat '{nom_complet}' enregistré dans le vivier. Matching en cours en arrière-plan."
-    return {"status": "success", "message": message, "alertes": [], "secteur_detecte": secteur_detecte}
+    # ── Matching différé — stocké pour être lancé depuis l'onglet Alertes ───────
+    # Le thread daemon maintenait le spinner Streamlit actif même après
+    # l'enregistrement. On stocke l'ID en base pour un matching au prochain
+    # chargement de l'onglet Alertes — zéro impact sur la vitesse d'enregistrement.
+    message = f"Candidat '{nom_complet}' enregistré dans le vivier."
+    return {"status": "success", "message": message, "alertes": [], "secteur_detecte": secteur_detecte,
+            "_matching_pending": {"candidat_id": candidat_id, "nom": nom_complet,
+                                  "poste": poste_cible, "competences": competences_resume,
+                                  "secteur": secteur_metier}}
 
 
 
@@ -3002,6 +2991,19 @@ if st.session_state['page_active'] == "🧭 TABLEAU DE BORD":
 elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
     st.header("🗃️ Gestion et Pilotage du Vivier Interne")
 
+    # ── Matching différé : lancé au premier affichage du vivier après une analyse ─
+    # Le matching est découplé de l'analyse CV pour ne pas bloquer le spinner UI.
+    # Il se déclenche silencieusement ici, une seule fois par candidat analysé.
+    if st.session_state.get("_matching_pending"):
+        _mp = st.session_state.pop("_matching_pending")
+        try:
+            _matcher_candidat_vs_besoins_ouverts(
+                _mp["candidat_id"], _mp["nom"], _mp["poste"],
+                _mp["competences"], _mp["secteur"]
+            )
+        except Exception:
+            pass  # Silencieux — les alertes sont bonus
+
     # -- Vérification du schéma : une seule fois par session, pas à chaque rerun --
     if not st.session_state.get("_vivier_schema_verifie"):
         try:
@@ -3176,9 +3178,11 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
                     _secteur_ia = (resultat_agent.get("donnees_structurees") or {}).get("secteur_detecte", "")
                     if _secteur_ia in _secteurs_disponibles:
                         st.session_state["secteur_suggere_agent"] = _secteur_ia
-                    st.success("✅ Analyse terminée et candidat enregistré dans le vivier ! Le matching se lance en arrière-plan.")
-                    # Vider le cache vivier immédiatement pour que le candidat
-                    # apparaisse sans changer d'onglet
+                    # Stocker les données de matching en attente pour exécution différée
+                    _mp = resultat_agent.get("_matching_pending")
+                    if _mp:
+                        st.session_state["_matching_pending"] = _mp
+                    st.success("✅ Candidat enregistré dans le vivier !")
                     _charger_vivier_candidats.clear()
                     st.rerun()
                 except Exception as e:
