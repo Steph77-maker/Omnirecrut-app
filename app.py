@@ -1280,12 +1280,13 @@ def _get_agent_model():
     )
 
 
-def analyser_cv_avec_agent(texte_cv: str, secteur_metier: str, max_tentatives: int = 3,
+def analyser_cv_avec_agent(texte_cv: str, secteur_metier: str, max_tentatives: int = 2,
                            image_cv_bytes: bytes | None = None) -> dict:
     """Analyse un CV et retourne un JSON structuré. L'enregistrement en base
     est fait directement par Python — plus de function calling, plus de double
     aller-retour avec l'API Gemini.
     Si image_cv_bytes est fourni, Gemini analyse aussi le style visuel du CV."""
+    import concurrent.futures as _cf
     for tentative in range(1, max_tentatives + 1):
         try:
             model = _get_agent_model()
@@ -1303,7 +1304,14 @@ def analyser_cv_avec_agent(texte_cv: str, secteur_metier: str, max_tentatives: i
                         }
                     },
                 ]
-            response = model.generate_content(contenu)
+            # Timeout explicite de 55 secondes — si Gemini ne répond pas, on lève une exception
+            # propre au lieu de bloquer indéfiniment
+            with _cf.ThreadPoolExecutor(max_workers=1) as _exec:
+                _future = _exec.submit(model.generate_content, contenu)
+                try:
+                    response = _future.result(timeout=55)
+                except _cf.TimeoutError:
+                    raise TimeoutError("Gemini n'a pas répondu dans le délai imparti (55s). Réessayez.")
             texte = response.text.strip()
             # Nettoyer les éventuels blocs markdown
             if texte.startswith("```"):
@@ -1315,6 +1323,11 @@ def analyser_cv_avec_agent(texte_cv: str, secteur_metier: str, max_tentatives: i
             donnees["cv_texte"] = texte_cv
             _save_candidate_to_sqlite(**donnees)
             return {"compte_rendu": donnees.get("compte_rendu", ""), "donnees_structurees": donnees}
+        except TimeoutError:
+            if tentative == max_tentatives:
+                raise
+            time.sleep(2)
+            continue
         except Exception as e:
             if tentative == max_tentatives:
                 raise
@@ -3130,10 +3143,17 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
                         )
                         _progression = min(int((_i + 1) / len(_etapes) * 90), 90)
                         _barre.progress(_progression)
-                        _time.sleep(3.5)
+                        _time.sleep(2.0)
                         _i += 1
 
-                    _thread.join()
+                    # Timeout global de 120s — si l'analyse dépasse ça, on abandonne proprement
+                    _thread.join(timeout=120)
+                    if _thread.is_alive():
+                        _placeholder.empty()
+                        _barre.empty()
+                        st.error("⏱️ L'analyse a dépassé le délai maximum (2 min). Réessayez dans quelques instants — les serveurs IA sont peut-être chargés.")
+                        st.stop()
+
                     _barre.progress(100)
                     _placeholder.markdown(
                         """<div style="background:#0f2d1a; border-left:3px solid #16a34a;
@@ -3142,7 +3162,7 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
                         </div>""",
                         unsafe_allow_html=True,
                     )
-                    _time.sleep(1)
+                    _time.sleep(0.5)
                     _placeholder.empty()
                     _barre.empty()
 
