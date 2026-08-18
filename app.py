@@ -743,8 +743,7 @@ if _qp_token:
     """, unsafe_allow_html=True)
     st.markdown("""
         <div style="text-align:center; padding:40px 0 20px 0;">
-            <h1 style="color:#ffb703; font-size:38px; font-weight:700;">🤖 OMNIRECRUT IA</h1>
-            <p style="color:#a3b1cc;">Activation de votre compte abonné</p>
+            <p style="color:#a3b1cc; font-size:18px; font-weight:600;">Activation de votre compte abonné</p>
         </div>
     """, unsafe_allow_html=True)
 
@@ -2024,9 +2023,6 @@ st.markdown(
 st.markdown(
     """
     <div style="text-align: center; padding: 10px 0px 25px 0px;">
-        <h1 style="color: #ffb703 !important; font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 42px; font-weight: 700; letter-spacing: 2px; margin-bottom: 5px;">
-            🤖 OMNIRECRUT IA
-        </h1>
         <p style="color: #a3b1cc; font-size: 16px; margin-top: 0px; font-weight: 300;">
             Solution Tout-en-Un de Sourcing Intelligent & Gestion de Vivier
         </p>
@@ -2273,9 +2269,17 @@ options_menu = [
 if st.session_state.get("is_admin"):
     options_menu.append("🔐 ABONNEMENTS & CLIENTS")
 
-index_actuel = options_menu.index(st.session_state['page_active']) if st.session_state['page_active'] in options_menu else 0
-menu = st.sidebar.radio("MENU PRINCIPAL", options_menu, index=index_actuel)
-st.session_state['page_active'] = menu
+if st.session_state['page_active'] not in options_menu:
+    st.session_state['page_active'] = options_menu[0]
+menu = st.sidebar.radio(
+    "MENU PRINCIPAL",
+    options_menu,
+    index=options_menu.index(st.session_state['page_active']),
+    key="nav_menu_principal",
+)
+if menu != st.session_state['page_active']:
+    st.session_state['page_active'] = menu
+    st.rerun()
 
 # ==============================================================================
 # FONCTION : génération PDF dossier candidat
