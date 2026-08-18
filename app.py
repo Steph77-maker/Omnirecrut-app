@@ -2120,6 +2120,10 @@ if st.session_state.get("is_admin", False):
                         ).isoformat()
                         conn_add = get_connection()
                         c_add = conn_add.cursor()
+                        # Sécurité RLS : la création d'une nouvelle organisation nécessite
+                        # de désactiver temporairement le filtre org_id pour cette connexion.
+                        # On pose org_id=0 (contexte admin) pour autoriser l'INSERT.
+                        c_add.execute("SET LOCAL app.org_id = '0'")
                         # Chaque prospect reçoit sa PROPRE organisation : espace de
                         # données totalement étanche, invisible des autres comptes
                         # (y compris de l'administrateur).
@@ -2130,6 +2134,8 @@ if st.session_state.get("is_admin", False):
                             (p_nom_org or p_email, p_email, date_fin_calc, LIMITE_REQUETES_IA),
                         )
                         id_org_prospect = c_add.fetchone()[0]
+                        # Poser org_id sur la nouvelle org pour autoriser l'INSERT utilisateur
+                        c_add.execute("SET LOCAL app.org_id = %s", (str(id_org_prospect),))
                         c_add.execute(
                             """INSERT INTO utilisateurs
                                (email, password, date_fin_essai, est_admin, nb_requetes_ia, organisation_id)
