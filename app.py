@@ -52,6 +52,14 @@ def _ouvrir_connexion_pg():
 # session_state. Le test de vivacité n'est fait qu'une fois par session pour
 # ne pas réintroduire de latence à chaque changement d'onglet.
 # ==============================================================================
+@st.cache_resource(show_spinner=False)
+def _get_connexion_admin_fraiche():
+    """Connexion PostgreSQL SANS contexte org_id — réservée aux requêtes admin
+    qui doivent voir TOUTES les organisations (tableau de bord commercial).
+    Mise en cache au niveau processus (partagée entre sessions admin)."""
+    return _ouvrir_connexion_pg()
+
+
 def get_connection():
     """Connexion PostgreSQL propre à la session utilisateur courante."""
     conn_pg = st.session_state.get("_pg_conn")
@@ -2204,7 +2212,7 @@ if st.session_state.get("is_admin", False):
     # --- 3. SOUS-MENU : SUPPRESSION D'UN PROSPECT ---
     with st.sidebar.expander("🗑️ Supprimer un Prospect"):
         try:
-            prospects_suppr = _charger_prospects_liste(conn)
+            prospects_suppr = _charger_prospects_liste(_get_connexion_admin_fraiche())
 
             if prospects_suppr:
                 user_a_supprimer = st.selectbox("Choisir le prospect à supprimer :", prospects_suppr, key="sb_delete_user")
@@ -5387,7 +5395,7 @@ if st.session_state.get("page_active") == "🔐 ABONNEMENTS & CLIENTS":
     )
 
     try:
-        lignes_org = _charger_organisations_admin(conn)
+        lignes_org = _charger_organisations_admin(_get_connexion_admin_fraiche())
     except Exception as e_org:
         st.error(f"Erreur de chargement : {e_org}")
         lignes_org = []
