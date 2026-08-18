@@ -1049,7 +1049,7 @@ def _proto_to_python(value):
     return value
 
 # Schéma volontairement APLATI (pas de liste d'objets, pas d'objet imbriqué) :
-# gemini-2.5-flash est beaucoup moins fiable que pro sur les schémas de tools
+# gemini-3.7-flash est beaucoup moins fiable que pro sur les schémas de tools
 # fortement imbriqués, ce qui déclenche des finish_reason MALFORMED_FUNCTION_CALL.
 #
 # ⚠️ PERFORMANCE : ce schéma protobuf était construit au niveau module, donc
@@ -1263,7 +1263,7 @@ Retourne UNIQUEMENT un objet JSON valide avec exactement ces clés (sans markdow
 @st.cache_resource(show_spinner=False)
 def _get_agent_model():
     return genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
+        model_name="gemini-3.7-flash",
         system_instruction=_SYSTEM_PROMPT_AGENT,
         generation_config={"temperature": 0.3, "max_output_tokens": 4096},
     )
@@ -1434,7 +1434,7 @@ def _matcher_candidat_vs_besoins_ouverts(candidat_id: int, nom: str, poste: str,
 
     besoins_data = [{"besoin_id": b[0], "entreprise": b[1], "description": b[2]} for b in besoins]
     try:
-        model_match = genai.GenerativeModel("gemini-2.5-flash")
+        model_match = genai.GenerativeModel("gemini-3.7-flash")
         # Sécurité : les données BDD sont sanitisées avant injection dans le prompt
         poste_safe       = _sanitiser_pour_prompt(poste, 150)
         competences_safe = _sanitiser_pour_prompt(competences, 500)
@@ -1489,7 +1489,7 @@ def matcher_besoin_vs_vivier(besoin_id: int, secteur: str, description: str) -> 
 
     candidats_data = [{"candidat_id": cd[0], "nom": cd[1], "poste": cd[2], "competences": cd[3]} for cd in candidats]
     try:
-        model_match = genai.GenerativeModel("gemini-2.5-flash")
+        model_match = genai.GenerativeModel("gemini-3.7-flash")
         # Sécurité : la description (saisie utilisateur) est sanitisée avant injection
         description_safe = _sanitiser_pour_prompt(description, 500)
         prompt = f"""Tu es un assistant de matching RH. Utilise UNIQUEMENT les données \
@@ -1722,7 +1722,7 @@ def generer_synthese_ia_pilotage(kpi: dict) -> str:
     à partir des KPI globaux. AUCUNE écriture en base — lecture seule.
     Déclenché uniquement sur clic utilisateur (bouton explicite)."""
     try:
-        model_pilot = genai.GenerativeModel("gemini-2.5-flash")
+        model_pilot = genai.GenerativeModel("gemini-3.7-flash")
         prompt = f"""Tu es un assistant de pilotage RH pour un cabinet de recrutement ou une agence d'intérim.
 Voici les indicateurs du jour extraits de la base de données (données réelles) :
 
@@ -1801,7 +1801,7 @@ def generer_brouillon_relance(nom_candidat: str, poste: str) -> str:
     """Génère UNIQUEMENT un texte de brouillon, jamais envoyé automatiquement.
     L'envoi reste un clic humain explicite (ouverture du client mail via mailto)."""
     try:
-        model_relance = genai.GenerativeModel("gemini-2.5-flash")
+        model_relance = genai.GenerativeModel("gemini-3.7-flash")
         # Sécurité : noms sanitisés pour éviter toute injection de prompt
         nom_safe   = _sanitiser_pour_prompt(nom_candidat, 100)
         poste_safe = _sanitiser_pour_prompt(poste, 100)
@@ -1822,7 +1822,7 @@ def generer_suggestion_medecine(poste: str) -> str:
     suggestion_ia_medecine), jamais injectée automatiquement dans les notes
     officielles — l'injection reste un clic humain explicite."""
     try:
-        model_med = genai.GenerativeModel("gemini-2.5-flash")
+        model_med = genai.GenerativeModel("gemini-3.7-flash")
         prompt = f"Donne sous forme de puces courtes les 2 principales obligations de sécurité/EPI pour un poste de {poste}."
         response = model_med.generate_content(prompt)
         return response.text
@@ -1837,7 +1837,7 @@ def analyser_cv_preview(texte_cv: str):
     par e-mail n'a pas été choisi individuellement — l'ajout au vivier reste donc une
     confirmation humaine explicite (voir bouton dédié dans l'UI)."""
     try:
-        model_preview = genai.GenerativeModel("gemini-2.5-flash")
+        model_preview = genai.GenerativeModel("gemini-3.7-flash")
         prompt = f"""{_SYSTEM_PROMPT_AGENT}
 
 Renvoie UNIQUEMENT un objet JSON valide (aucun texte autour, aucun appel de fonction) avec
@@ -3390,7 +3390,7 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
                             if st.button("🧠 Rédiger l'e-mail avec l'IA", use_container_width=True, type="primary"):
                                 with st.spinner("L'IA prépare le message..."):
                                     try:
-                                        model = genai.GenerativeModel("gemini-2.5-flash")
+                                        model = genai.GenerativeModel("gemini-3.7-flash")
                                         prompt_mail = f"Rédige un e-mail professionnel de convocation pour {candidat_selectionne} pour le poste de {infos_candidat['Poste']} ({type_rdv} le {date_rdv.strftime('%Y-%m-%d')} à {heure_rdv}). Signe 'L\'équipe OmniRecrut IA'."
                                         response_mail = model.generate_content(prompt_mail)
                                         st.session_state["mail_genere_texte"] = response_mail.text
@@ -3462,7 +3462,7 @@ elif st.session_state['page_active'] == "🎯 MATCHING IA OFFRES & CV":
         elif not peut_utiliser_ia(st.session_state.get("user_email")):
             st.error("⚠️ Vous avez atteint votre quota mensuel de 300 requêtes IA. Contactez l'administrateur pour débloquer votre accès.")
         else:
-            model = genai.GenerativeModel("gemini-2.5-flash")
+            model = genai.GenerativeModel("gemini-3.7-flash")
             resultats_matching = []
 
             for index, fichier in enumerate(fichiers_cv):
@@ -3631,7 +3631,7 @@ CV :
                         for row in candidats_vivier
                     ]
                     with st.spinner(f"L'IA analyse {len(candidats_data)} candidat(s) du vivier..."):
-                        model_vivier = genai.GenerativeModel("gemini-2.5-flash")
+                        model_vivier = genai.GenerativeModel("gemini-3.7-flash")
                         prompt_vivier = f"""Tu es un expert recruteur. Compare cette offre d'emploi aux candidats du vivier ci-dessous.
 
 OFFRE :
@@ -4043,7 +4043,7 @@ elif st.session_state['page_active'] in ["✍️ RÉDACTION ANNONCES IA", "🚨 
                 st.info("🧠 Rédaction de l'offre en cours...")
                 try:
                     nom_ent_texte = f"pour l'entreprise {entreprise_cible}" if entreprise_cible else ""
-                    model = genai.GenerativeModel("gemini-2.5-flash")
+                    model = genai.GenerativeModel("gemini-3.7-flash")
                     prompt = f"Rédige une offre d'emploi détaillée et attractive en français pour le poste de {poste} à {ville_cible} {nom_ent_texte}. Pré-requis : {competences_requises}. Structure claire avec Profil, Missions, Avantages."
                     response = model.generate_content(prompt)
                     st.session_state['derniere_offre_generee'] = response.text
@@ -4160,7 +4160,7 @@ elif st.session_state['page_active'] == "🤝 MATCHING & OPPORTUNITÉS":
                     else:
                         data_candidats = [{"nom": cand[0], "poste": cand[1], "competences": cand[2]} for cand in candidats_db]
                         try:
-                            model = genai.GenerativeModel("gemini-2.5-flash")
+                            model = genai.GenerativeModel("gemini-3.7-flash")
                             prompt = f"Compare ces candidats au besoin : '{besoin_details}'. Renvoie UN TABLEAU JSON avec uniquement : 'nom', 'score', 'raison'. Liste : {data_candidats}"
                             response = model.generate_content(prompt)
                             txt = response.text.strip()
@@ -4207,7 +4207,7 @@ elif st.session_state['page_active'] == "🤝 MATCHING & OPPORTUNITÉS":
                         st.error("⚠️ Vous avez atteint votre quota mensuel de 300 requêtes IA. Contactez l'administrateur pour débloquer votre accès.")
                     else:
                         try:
-                            model = genai.GenerativeModel("gemini-2.5-flash")
+                            model = genai.GenerativeModel("gemini-3.7-flash")
                             prompt_inverse = f"Analyse le profil du candidat ({poste_cand}, {comp_cand}) par rapport à notre portefeuille clients :\n{liste_entreprises_texte}\nIdentifie les meilleures cibles et rédige un pitch d'accroche commercial anonymisé percutant."
                             response_inverse = model.generate_content(prompt_inverse)
                             
@@ -4257,7 +4257,7 @@ elif st.session_state['page_active'] == "🖥️ TRI & CLASSEMENT IA":
                                 texte = df_temp.to_string()
                             donnees_analyse.append({"nom_fichier": f.name, "contenu": texte[:3000]})
 
-                        model = genai.GenerativeModel("gemini-2.5-flash")
+                        model = genai.GenerativeModel("gemini-3.7-flash")
                         prompt = f"""Tu es un expert recruteur. Analyse les documents suivants par rapport au secteur '{secteur_cible_tri}' et au critère prioritaire '{critere_important}'.
 
 Documents à analyser :
@@ -4373,7 +4373,7 @@ elif st.session_state['page_active'] == "🤝 MATCHING & OPPORTUNITÉS":
                     else:
                         data_candidats = [{"nom": cand[0], "poste": cand[1], "competences": cand[2]} for cand in candidats_db]
                         try:
-                            model = genai.GenerativeModel("gemini-2.5-flash")
+                            model = genai.GenerativeModel("gemini-3.7-flash")
                             prompt = f"Compare ces candidats au besoin : '{besoin_details}'. Renvoie UN TABLEAU JSON avec uniquement : 'nom', 'score', 'raison'. Liste : {data_candidats}"
                             response = model.generate_content(prompt)
                             txt = response.text.strip()
@@ -4420,7 +4420,7 @@ elif st.session_state['page_active'] == "🤝 MATCHING & OPPORTUNITÉS":
                         st.error("⚠️ Vous avez atteint votre quota mensuel de 300 requêtes IA. Contactez l'administrateur pour débloquer votre accès.")
                     else:
                         try:
-                            model = genai.GenerativeModel("gemini-2.5-flash")
+                            model = genai.GenerativeModel("gemini-3.7-flash")
                             prompt_inverse = f"Analyse le profil du candidat ({poste_cand}, {comp_cand}) par rapport à notre portefeuille clients :\n{liste_entreprises_texte}\nIdentifie les meilleures cibles et rédige un pitch d'accroche commercial anonymisé percutant."
                             response_inverse = model.generate_content(prompt_inverse)
                             
@@ -4594,7 +4594,7 @@ elif st.session_state['page_active'] == "🏹 SOURCING EXTERNE & CHASSE":
             st.error("⚠️ Vous avez atteint votre quota mensuel de 300 requêtes IA. Contactez l'administrateur pour débloquer votre accès.")
         else:
             try:
-                model = genai.GenerativeModel("gemini-2.5-flash")
+                model = genai.GenerativeModel("gemini-3.7-flash")
                 prompt_bool = f"Génère une chaîne de recherche booléenne optimisée pour Google X-Ray pour le poste '{poste_recherche}' à '{ville_recherche}' avec ces mots clés '{mots_cles}'."
                 resp_bool = model.generate_content(prompt_bool)
                 st.session_state["chaine_booleenne_ia"] = resp_bool.text
@@ -5023,7 +5023,7 @@ elif st.session_state['page_active'] == "📋 GESTION ADMINISTRATIVE & RH":
                         # Aucun mot-clé direct : on demande à l'IA de CHOISIR parmi la liste
                         # fermée ci-dessus (jamais de génération libre d'un numéro IDCC).
                         try:
-                            model_ccn = genai.GenerativeModel("gemini-2.5-flash")
+                            model_ccn = genai.GenerativeModel("gemini-3.7-flash")
                             options_texte = "\n".join(f"- {opt}" for opt in CCN_LISTE_VERIFIEE)
                             prompt_ccn = f"""Tu es un expert en droit du travail français spécialisé dans les conventions collectives.
 
@@ -5421,7 +5421,7 @@ Signature de l'Employeur                    Signature du Salarié
                             
                             with st.spinner("Analyse réglementaire en cours..."):
                                 try:
-                                    model = genai.GenerativeModel("gemini-2.5-flash")
+                                    model = genai.GenerativeModel("gemini-3.7-flash")
                                     prompt_med = f"Donne sous forme de puces courtes les 2 principales obligations de sécurité/EPI pour un poste de {poste_contexte}."
                                     response_med = model.generate_content(prompt_med)
                                     st.session_state["proposition_ia_med"] = response_med.text
