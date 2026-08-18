@@ -1184,7 +1184,7 @@ def _get_agent_model():
     return genai.GenerativeModel(
         model_name="gemini-2.5-flash",
         system_instruction=_SYSTEM_PROMPT_AGENT,
-        generation_config={"temperature": 0.3, "max_output_tokens": 4096},
+        generation_config={"temperature": 0.3, "max_output_tokens": 8192},
     )
 
 
@@ -1225,7 +1225,19 @@ def analyser_cv_avec_agent(texte_cv: str, secteur_metier: str, max_tentatives: i
             if texte.startswith("```"):
                 texte = re.sub(r"^```[a-z]*\n?", "", texte)
                 texte = re.sub(r"\n?```$", "", texte.strip())
-            donnees = json.loads(texte)
+            # Tentative de parsing JSON — si tronqué, on tente une réparation minimale
+            try:
+                donnees = json.loads(texte)
+            except json.JSONDecodeError:
+                # Le JSON est peut-être tronqué (max_output_tokens atteint)
+                # On tente de fermer proprement le JSON en ajoutant les accolades manquantes
+                texte_repare = texte.rstrip().rstrip(",")
+                # Compter les accolades ouvertes non fermées
+                ouvertes = texte_repare.count("{") - texte_repare.count("}")
+                crochets = texte_repare.count("[") - texte_repare.count("]")
+                # Fermer les tableaux puis les objets
+                texte_repare += "]" * max(0, crochets) + "}" * max(0, ouvertes)
+                donnees = json.loads(texte_repare)
             # Enregistrement direct en base — sans passer par le function calling
             donnees["secteur_metier"] = secteur_metier
             donnees["cv_texte"] = texte_cv
