@@ -2118,31 +2118,36 @@ if st.session_state.get("is_admin", False):
                         date_fin_calc = (
                             datetime.date.today() + datetime.timedelta(days=p_jours)
                         ).isoformat()
-                        conn_add = get_connection()
-                        c_add = conn_add.cursor()
-                        # Sécurité RLS : la création d'une nouvelle organisation nécessite
-                        # de désactiver temporairement le filtre org_id pour cette connexion.
-                        # On pose org_id=0 (contexte admin) pour autoriser l'INSERT.
-                        c_add.execute("SET LOCAL app.org_id = '0'")
-                        # Chaque prospect reçoit sa PROPRE organisation : espace de
-                        # données totalement étanche, invisible des autres comptes
-                        # (y compris de l'administrateur).
-                        c_add.execute(
-                            """INSERT INTO organisations
-                               (nom, email_contact, statut_abonnement, date_fin_essai, quota_max)
-                               VALUES (%s, %s, 'ESSAI', %s, %s) RETURNING id""",
-                            (p_nom_org or p_email, p_email, date_fin_calc, LIMITE_REQUETES_IA),
-                        )
-                        id_org_prospect = c_add.fetchone()[0]
-                        # Poser org_id sur la nouvelle org pour autoriser l'INSERT utilisateur
-                        c_add.execute("SET LOCAL app.org_id = %s", (str(id_org_prospect),))
-                        c_add.execute(
-                            """INSERT INTO utilisateurs
-                               (email, password, date_fin_essai, est_admin, nb_requetes_ia, organisation_id)
-                               VALUES (%s, %s, %s, 0, 0, %s)""",
-                            (p_email, hacher_mdp(p_pwd), date_fin_calc, id_org_prospect),
-                        )
-                        conn_add.commit()
+                        # Connexion FRAÎCHE sans contexte org_id pour la création
+                        # d'un nouveau prospect. La connexion de session de l'admin
+                        # a app.org_id posé à son org — ce qui bloquerait l'INSERT
+                        # d'une nouvelle organisation. Une connexion fraîche n'a pas
+                        # de app.org_id, ce qui déclenche la branche IS NULL de la
+                        # policy RLS et autorise l'opération.
+                        conn_add = _ouvrir_connexion_pg()
+                        conn_add.autocommit = False
+                        try:
+                            c_add = conn_add.cursor()
+                            # Chaque prospect reçoit sa PROPRE organisation
+                            c_add.execute(
+                                """INSERT INTO organisations
+                                   (nom, email_contact, statut_abonnement, date_fin_essai, quota_max)
+                                   VALUES (%s, %s, 'ESSAI', %s, %s) RETURNING id""",
+                                (p_nom_org or p_email, p_email, date_fin_calc, LIMITE_REQUETES_IA),
+                            )
+                            id_org_prospect = c_add.fetchone()[0]
+                            c_add.execute(
+                                """INSERT INTO utilisateurs
+                                   (email, password, date_fin_essai, est_admin, nb_requetes_ia, organisation_id)
+                                   VALUES (%s, %s, %s, 0, 0, %s)""",
+                                (p_email, hacher_mdp(p_pwd), date_fin_calc, id_org_prospect),
+                            )
+                            conn_add.commit()
+                        except Exception:
+                            conn_add.rollback()
+                            raise
+                        finally:
+                            conn_add.close()
                         _charger_prospects_quotas.clear()
                         _charger_prospects_liste.clear()
                         st.success(
