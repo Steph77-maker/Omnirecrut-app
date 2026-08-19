@@ -3701,6 +3701,105 @@ CV :
             st.success("✅ Analyse terminée !")
             st.rerun()
 
+    # ── Recherche dans le vivier existant ────────────────────────────────────
+    st.markdown("---")
+    st.subheader("🗃️ Rechercher dans le vivier existant")
+    st.caption("L'IA compare l'offre saisie ci-dessus aux candidats déjà présents dans votre vivier et identifie les meilleurs profils.")
+
+    if st.button("🔍 CHERCHER DANS LE VIVIER", key="btn_chercher_vivier"):
+        if not texte_offre:
+            st.error("⚠️ Saisissez d'abord une offre ou description de poste dans le champ ci-dessus.")
+        elif not peut_utiliser_ia(st.session_state.get("user_email")):
+            st.error("⚠️ Quota IA atteint.")
+        else:
+            try:
+                conn_viv = get_connexion_saine()
+                c_viv = conn_viv.cursor()
+                c_viv.execute(
+                    "SELECT id, nom, poste, competences, avis_ia, secteur_metier FROM candidats ORDER BY id DESC"
+                )
+                candidats_vivier = c_viv.fetchall()
+                if not candidats_vivier:
+                    st.info("Le vivier est vide pour le moment.")
+                else:
+                    candidats_data = [
+                        {
+                            "id": row[0],
+                            "nom": row[1],
+                            "poste": row[2],
+                            "competences": (row[3] or "")[:400],
+                            "secteur": row[5] or "",
+                        }
+                        for row in candidats_vivier
+                    ]
+                    with st.spinner(f"L'IA analyse {len(candidats_data)} candidat(s) du vivier..."):
+                        model_vivier = genai.GenerativeModel("gemini-2.5-flash")
+                        prompt_vivier = f"""Tu es un expert recruteur. Compare cette offre d'emploi aux candidats du vivier ci-dessous.
+
+OFFRE :
+{texte_offre}
+
+CANDIDATS DU VIVIER (id, nom, poste, compétences résumées) :
+{json.dumps(candidats_data, ensure_ascii=False)}
+
+Pour chaque candidat, évalue son adéquation avec l'offre.
+Renvoie STRICTEMENT un tableau JSON (aucun texte autour, aucun markdown), un objet par candidat, avec ces clés :
+- "id" : l'id du candidat (reprends-le tel quel)
+- "nom" : le nom du candidat
+- "niveau" : l'une de ces 4 valeurs EXACTES selon l'adéquation : "concordant", "potentiel", "partiel", "hors_perimetre"
+- "raison" : une phrase courte et factuelle expliquant le niveau (points forts et points faibles)
+
+N'inclus dans le résultat QUE les candidats avec un niveau "concordant", "potentiel" ou "partiel". Trie par niveau décroissant (concordant en premier)."""
+                        resp_vivier = model_vivier.generate_content(prompt_vivier)
+                        incrémenter_quota_ia(st.session_state.get("user_email"))
+                        resultats_vivier = _extraire_json_liste(resp_vivier.text)
+
+                    vivier_par_id = {row[0]: row for row in candidats_vivier}
+                    st.session_state["resultats_vivier_matching"] = [
+                        {**r,
+                         "poste": vivier_par_id.get(r.get("id"), (None,) * 6)[2] or "",
+                         "competences": vivier_par_id.get(r.get("id"), (None,) * 6)[3] or "",
+                         "secteur": vivier_par_id.get(r.get("id"), (None,) * 6)[5] or ""}
+                        for r in resultats_vivier if isinstance(r, dict) and r.get("id")
+                    ]
+                    if not st.session_state["resultats_vivier_matching"]:
+                        st.info("Aucun candidat du vivier ne correspond suffisamment à cette offre.")
+                    else:
+                        st.success(f"✅ {len(st.session_state['resultats_vivier_matching'])} candidat(s) du vivier correspondent à cette offre.")
+            except Exception as e:
+                st.error(f"Erreur lors de la recherche dans le vivier : {e}")
+
+    if st.session_state.get("resultats_vivier_matching"):
+        NIVEAUX_VIVIER = {
+            "concordant":     ("🟢 Profil concordant",  "#15803d"),
+            "potentiel":      ("🟡 Profil à potentiel", "#a16207"),
+            "partiel":        ("🟠 Profil à distance",  "#c2410c"),
+            "hors_perimetre": ("🔴 Hors périmètre",     "#b91c1c"),
+        }
+        st.markdown("#### 🏆 Candidats du vivier correspondant à l'offre")
+        for res in st.session_state["resultats_vivier_matching"]:
+            niv_v = res.get("niveau", "partiel")
+            niv_label_v, couleur_v = NIVEAUX_VIVIER.get(niv_v, ("⚪ Non défini", "#64748b"))
+            st.markdown(f"""
+                <div style="background-color:#2d3748; border-radius:10px; padding:16px;
+                            margin-bottom:10px; border-left:5px solid {couleur_v};">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-size:17px; font-weight:700; color:#ffffff;">🧑‍💼 {html.escape(str(res.get('nom','Inconnu')))}</span>
+                        <span style="background-color:{couleur_v}; color:white; padding:4px 14px;
+                                     border-radius:20px; font-weight:700; font-size:13px;">{niv_label_v}</span>
+                    </div>
+                    <div style="color:#a3b1cc; font-size:13px; margin-top:4px;">
+                        {html.escape(str(res.get('poste','') or '—'))} · Secteur : {html.escape(str(res.get('secteur','') or '—'))}
+                    </div>
+                    <div style="color:#e2e8f0; font-size:13px; margin-top:8px;">
+                        💬 {html.escape(str(res.get('raison','') or '—'))}
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
+        if st.button("🗑️ Effacer les résultats vivier", key="btn_clear_vivier"):
+            st.session_state["resultats_vivier_matching"] = []
+            st.rerun()
+
     # ── Affichage des résultats ──────────────────────────────────────────────
     if st.session_state.get('derniers_matchs'):
         st.markdown("---")
