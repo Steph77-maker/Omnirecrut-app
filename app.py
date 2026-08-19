@@ -2750,6 +2750,220 @@ def afficher_profil_candidat_enrichi(infos_candidat, conn):
             """, unsafe_allow_html=True)
 
 
+def _generer_pdf_matching(cand: dict, texte_offre: str = ""):
+    """Génère le PDF du rapport Matching CV × Offre."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+    from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
+    import io
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4,
+                            rightMargin=2*cm, leftMargin=2*cm,
+                            topMargin=2*cm, bottomMargin=2*cm)
+
+    BLEU   = colors.HexColor("#1a2e4a")
+    BLEU2  = colors.HexColor("#2563eb")
+    GTXT   = colors.HexColor("#475569")
+    BLANC  = colors.white
+
+    COULEURS_NC = {
+        "concordant":     colors.HexColor("#15803d"),
+        "potentiel":      colors.HexColor("#a16207"),
+        "partiel":        colors.HexColor("#c2410c"),
+        "hors_perimetre": colors.HexColor("#b91c1c"),
+    }
+    LABELS_NC = {
+        "concordant":     "Profil concordant",
+        "potentiel":      "Profil à potentiel",
+        "partiel":        "Profil à distance",
+        "hors_perimetre": "Hors périmètre",
+    }
+    COULEURS_CRITERE = {
+        "couvert":      colors.HexColor("#15803d"),
+        "transferable": colors.HexColor("#1d4ed8"),
+        "partiel":      colors.HexColor("#b45309"),
+        "absent":       colors.HexColor("#b91c1c"),
+    }
+    LABELS_CRITERE = {
+        "couvert":      "Couvert",
+        "transferable": "Transférable",
+        "partiel":      "Partiel",
+        "absent":       "Absent",
+    }
+
+    styles = getSampleStyleSheet()
+    h1  = ParagraphStyle('H1', fontSize=13, textColor=BLANC, fontName='Helvetica-Bold',
+                          spaceAfter=6, spaceBefore=4, leading=16)
+    h2  = ParagraphStyle('H2', fontSize=11, textColor=BLEU, fontName='Helvetica-Bold',
+                          spaceAfter=5, spaceBefore=8)
+    corps = ParagraphStyle('Corps', fontSize=9, textColor=GTXT, fontName='Helvetica',
+                            spaceAfter=3, leading=13)
+    petit = ParagraphStyle('Petit', fontSize=8, textColor=GTXT, fontName='Helvetica-Oblique',
+                            spaceAfter=2, leading=11)
+
+    def bloc_header(titre, couleur=BLEU):
+        t = Table([[Paragraph(titre, h1)]], colWidths=[17*cm])
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,-1), couleur),
+            ('TOPPADDING', (0,0), (-1,-1), 8),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+            ('LEFTPADDING', (0,0), (-1,-1), 12),
+        ]))
+        return t
+
+    nc = cand.get("niveau_concordance", "partiel")
+    nc_couleur = COULEURS_NC.get(nc, colors.HexColor("#64748b"))
+    nc_label   = LABELS_NC.get(nc, "Non défini")
+    nom        = cand.get("nom", "Candidat")
+    synthese   = cand.get("synthese_profil", {})
+    criteres   = cand.get("criteres", [])
+
+    story = []
+
+    # En-tête
+    entete = Table([[
+        Paragraph(f"<b>{html.escape(str(nom))}</b>",
+                  ParagraphStyle('N', fontSize=18, textColor=BLANC, fontName='Helvetica-Bold', leading=22)),
+        Paragraph(f"<b>{nc_label}</b>",
+                  ParagraphStyle('S', fontSize=13, textColor=BLANC, fontName='Helvetica-Bold', alignment=TA_RIGHT))
+    ]], colWidths=[11*cm, 6*cm])
+    entete.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,-1), nc_couleur),
+        ('TOPPADDING', (0,0), (-1,-1), 16),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+        ('LEFTPADDING', (0,0), (-1,-1), 14),
+        ('RIGHTPADDING', (0,0), (-1,-1), 14),
+    ]))
+    story.append(entete)
+
+    sous = Table([[
+        Paragraph(html.escape(str(cand.get("coordonnees", ""))),
+                  ParagraphStyle('C', fontSize=10, textColor=colors.HexColor("#93c5fd"), fontName='Helvetica')),
+        Paragraph(f"Rapport généré le {datetime.datetime.now().strftime('%d/%m/%Y à %H:%M')}",
+                  ParagraphStyle('D', fontSize=8, textColor=colors.HexColor("#93c5fd"),
+                                 fontName='Helvetica-Oblique', alignment=TA_RIGHT))
+    ]], colWidths=[10*cm, 7*cm])
+    sous.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,-1), BLEU),
+        ('TOPPADDING', (0,0), (-1,-1), 4),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 12),
+        ('LEFTPADDING', (0,0), (-1,-1), 14),
+        ('RIGHTPADDING', (0,0), (-1,-1), 14),
+    ]))
+    story.append(sous)
+    story.append(Spacer(1, 0.3*cm))
+
+    # Disclaimer
+    disc = Table([[Paragraph(
+        "Analyse produite par intelligence artificielle a partir du contenu ecrit du CV et de l'offre d'emploi. "
+        "La decision de recrutement releve exclusivement du recruteur humain.",
+        petit)]], colWidths=[17*cm])
+    disc.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#fef3c7")),
+        ('TOPPADDING', (0,0), (-1,-1), 6), ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+        ('LEFTPADDING', (0,0), (-1,-1), 10),
+        ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor("#f59e0b")),
+    ]))
+    story.append(disc)
+    story.append(Spacer(1, 0.4*cm))
+
+    # Grille critères
+    story.append(bloc_header("Analyse critere par critere - Offre x CV"))
+    story.append(Spacer(1, 0.2*cm))
+    for cr in criteres:
+        niv = cr.get("niveau", "absent")
+        niv_label   = LABELS_CRITERE.get(niv, "?")
+        niv_couleur = COULEURS_CRITERE.get(niv, colors.HexColor("#64748b"))
+        crit_txt    = html.escape(str(cr.get("critere", "")))
+        just_txt    = html.escape(str(cr.get("justification", "")))
+        row = Table([[
+            Paragraph(f"<b>{niv_label}</b>",
+                      ParagraphStyle('NL', fontSize=8, textColor=BLANC,
+                                     fontName='Helvetica-Bold', alignment=TA_CENTER)),
+            [Paragraph(f"<b>{crit_txt}</b>", corps),
+             Paragraph(just_txt, petit)]
+        ]], colWidths=[2.8*cm, 14.2*cm])
+        row.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (0,0), niv_couleur),
+            ('VALIGN', (0,0), (-1,-1), 'TOP'),
+            ('TOPPADDING', (0,0), (-1,-1), 6), ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+            ('LEFTPADDING', (0,0), (-1,-1), 6),
+            ('BOX', (0,0), (-1,-1), 0.3, colors.HexColor("#e2e8f0")),
+        ]))
+        story.append(row)
+        story.append(Spacer(1, 0.1*cm))
+
+    story.append(Spacer(1, 0.3*cm))
+
+    # Synthèse profil
+    story.append(bloc_header("Profil complet du candidat"))
+    story.append(Spacer(1, 0.2*cm))
+
+    if synthese.get("lecture_parcours"):
+        story.append(Paragraph("Lecture du parcours", h2))
+        story.append(Paragraph(html.escape(str(synthese["lecture_parcours"])), corps))
+
+    pf = synthese.get("points_forts_pour_ce_poste", [])
+    if pf:
+        story.append(Paragraph("Points forts pour ce poste", h2))
+        for item in pf:
+            story.append(Paragraph(f"- {html.escape(str(item))}", corps))
+
+    ct = synthese.get("competences_transferables", [])
+    if ct:
+        story.append(Paragraph("Competences transferables", h2))
+        for item in ct:
+            story.append(Paragraph(f"- {html.escape(str(item))}", corps))
+
+    ib = synthese.get("indices_comportementaux", [])
+    if ib:
+        story.append(Paragraph("Indices comportementaux", h2))
+        for item in ib:
+            story.append(Paragraph(f"- {html.escape(str(item))}", corps))
+
+    pv = synthese.get("points_vigilance", [])
+    if pv:
+        story.append(Paragraph("Points de vigilance", h2))
+        for item in pv:
+            story.append(Paragraph(f"- {html.escape(str(item))}", corps))
+
+    if synthese.get("coherence_projet"):
+        story.append(Paragraph("Coherence du projet", h2))
+        coh = Table([[Paragraph(html.escape(str(synthese["coherence_projet"])), corps)]], colWidths=[17*cm])
+        coh.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#eff6ff")),
+            ('TOPPADDING', (0,0), (-1,-1), 8), ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+            ('LEFTPADDING', (0,0), (-1,-1), 10),
+            ('BOX', (0,0), (-1,-1), 0.5, BLEU2),
+        ]))
+        story.append(coh)
+
+    # Avis recruteur
+    if cand.get("avis_recruteur"):
+        story.append(Spacer(1, 0.3*cm))
+        story.append(bloc_header("Avis du recruteur IA"))
+        story.append(Spacer(1, 0.2*cm))
+        story.append(Paragraph(html.escape(str(cand["avis_recruteur"])),
+            ParagraphStyle('Avis', fontSize=8.5, textColor=GTXT, fontName='Helvetica',
+                           leading=13, spaceAfter=4)))
+
+    # Footer
+    story.append(Spacer(1, 0.4*cm))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#e2e8f0")))
+    story.append(Paragraph(
+        "OmniRecrut IA - Rapport de concordance CV x Offre - omnirecrutia.fr",
+        ParagraphStyle('F', fontSize=7.5, textColor=GTXT, fontName='Helvetica-Oblique',
+                       alignment=TA_CENTER)))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
+
+
 # --- ONGLET 0 : TABLEAU DE BORD (digest quotidien + Agent IA de pilotage) ---
 if st.session_state['page_active'] == "🧭 TABLEAU DE BORD":
     st.header("🧭 Tableau de Bord — Synthèse Quotidienne")
@@ -3317,11 +3531,8 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
 
 # --- ONGLET 2 : MATCHING AUTOMATISÉ ---
 elif st.session_state['page_active'] == "🎯 MATCHING IA OFFRES & CV":
-    st.header("🎯 Module de Matching & Scoring Prédictif")
+    st.header("🎯 Module de Matching IA — CV × Offre d'emploi")
 
-    # -----------------------------------------------------------------------
-    # Initialisation des clés de session nécessaires à cet onglet
-    # -----------------------------------------------------------------------
     if 'derniers_matchs' not in st.session_state:
         st.session_state['derniers_matchs'] = []
     if '_matching_fichiers_ids' not in st.session_state:
@@ -3347,14 +3558,9 @@ elif st.session_state['page_active'] == "🎯 MATCHING IA OFFRES & CV":
             key="matching_uploader"
         )
 
-    # -----------------------------------------------------------------------
-    # BUG FIX : Détection d'un changement de fichiers → nettoyage strict de session
-    # On utilise les noms+tailles comme empreinte légère (pas de hash binaire).
-    # -----------------------------------------------------------------------
     if fichiers_cv is not None:
         nouveaux_ids = sorted([f"{f.name}_{f.size}" for f in fichiers_cv])
         if nouveaux_ids != st.session_state['_matching_fichiers_ids']:
-            # Nouveau(x) fichier(s) détecté(s) — on purge tout résultat précédent
             st.session_state['derniers_matchs'] = []
             st.session_state['_matching_fichiers_ids'] = nouveaux_ids
 
@@ -3362,7 +3568,7 @@ elif st.session_state['page_active'] == "🎯 MATCHING IA OFFRES & CV":
         if not texte_offre or not fichiers_cv:
             st.error("⚠️ Offre ou CV manquant.")
         elif not peut_utiliser_ia(st.session_state.get("user_email")):
-            st.error("⚠️ Vous avez atteint votre quota mensuel de 300 requêtes IA. Contactez l'administrateur pour débloquer votre accès.")
+            st.error("⚠️ Vous avez atteint votre quota mensuel de requêtes IA. Contactez l'administrateur pour débloquer votre accès.")
         else:
             model = genai.GenerativeModel("gemini-2.5-flash")
             resultats_matching = []
@@ -3372,76 +3578,77 @@ elif st.session_state['page_active'] == "🎯 MATCHING IA OFFRES & CV":
                     reader = PdfReader(fichier)
                     texte_cv = "".join([page.extract_text() for page in reader.pages if page.extract_text()])
 
-                    # -------------------------------------------------------------------
-                    # PROMPT V2 : Sous-scores pondérés + catégorisation des compétences
-                    # -------------------------------------------------------------------
                     prompt = f"""
-Tu es un Expert Recruteur et Chasseur de Têtes, spécialisé dans la détection de potentiel
-au-delà du matching par mots-clés classique. Analyse ce CV par rapport à la fiche de poste fournie.
+Tu es un Expert Recruteur et Chasseur de Têtes, spécialisé dans l'analyse fine de CV face à une offre d'emploi.
+Ta mission est de produire une analyse rigoureuse, sourcée et argumentée — jamais un simple score.
 
-═══════════════════════════════════════════════════════════
-RÈGLES ABSOLUES — À RESPECTER SANS EXCEPTION
-═══════════════════════════════════════════════════════════
+═══════════════════════════════════════════════
+RÈGLES ABSOLUES
+═══════════════════════════════════════════════
 
-RÈGLE 1 — ATTRIBUTION STRICTE PAR EMPLOYEUR :
-Pour chaque compétence, résultat chiffré ou réalisation identifiée, tu DOIS l'attribuer à
-l'employeur et à la période exacte dont elle est issue dans le CV. Ne transpose JAMAIS une
-réalisation d'une expérience à une autre. Si tu cites "portefeuille de X clients", "classement
-parmi les N meilleurs", "management de Y personnes" ou tout autre résultat quantifié, précise
-SYSTÉMATIQUEMENT l'employeur source exact tel qu'il figure dans le CV.
-Si l'origine est ambiguë, signale-le : "résultat dont l'attribution précise n'est pas établie
-dans le CV" — n'affecte jamais par défaut à l'employeur cité en dernier ou au plus reconnaissable.
+RÈGLE 1 — ATTRIBUTION STRICTE :
+Pour chaque compétence ou réalisation identifiée, tu DOIS citer l'employeur exact et la période
+tels qu'ils apparaissent dans le CV. Ne transpose jamais une réalisation d'une expérience à une autre.
+Si l'origine est ambiguë, signale-le explicitement.
 
 RÈGLE 2 — FORMULATIONS NUANCÉES :
 Distingue ce qui est EXPLICITEMENT ÉCRIT de ce qui est DÉDUIT.
 - Écrit → factuel : "a géré une équipe de 5 personnes"
-- Déduit → conditionnel obligatoire : "semble indiquer", "laisse supposer", "indices compatibles avec"
-N'affirme jamais une qualité personnelle (leadership, rigueur, autonomie…) si elle n'est pas
-formulée dans le CV. Préfère "des indices de [qualité] sont perceptibles" à "[qualité] avéré(e)".
+- Déduit → conditionnel : "semble indiquer", "laisse supposer", "indices compatibles avec"
+N'affirme jamais une qualité personnelle non formulée dans le CV.
 
-═══════════════════════════════════════════════════════════
+RÈGLE 3 — PAS DE NOTE GLOBALE :
+Tu ne dois PAS calculer ni renvoyer de score ou pourcentage global.
+La concordance est exprimée uniquement via le champ "niveau_concordance" (voir ci-dessous)
+et via l'analyse critère par critère.
+
+═══════════════════════════════════════════════
 CONSIGNES D'ANALYSE
-═══════════════════════════════════════════════════════════
+═══════════════════════════════════════════════
 
-1. Ne te limite pas à la recherche stricte de mots-clés.
-2. Analyse la trajectoire, la cohérence du parcours et le potentiel du candidat.
-3. Pour CHAQUE compétence identifiée, classe-la dans l'une de ces 3 catégories STRICTES :
-   - "demonstree" : clairement écrite ET justifiée dans le CV (diplôme, poste, mission explicite)
-   - "fortement_probable" : déduite logiquement d'une tâche ou réalisation factuelle présente dans le CV
-   - "transferable" : issue d'une expérience passée ou d'un autre secteur, applicable au poste cible
-   Pour chaque compétence "fortement_probable" ou "transferable", indique OBLIGATOIREMENT dans le
-   champ "source" l'employeur exact et la période tels qu'ils apparaissent dans le CV.
-   N'invente JAMAIS une expérience ou compétence absente du CV.
-4. Si aucune compétence transférable pertinente n'existe, dis-le explicitement.
+1. Identifie les critères clés de l'offre (compétences, expérience, secteur, formation, soft skills).
+2. Pour chaque critère, évalue la concordance avec le CV selon 4 niveaux EXCLUSIFS :
+   - "couvert" : le CV répond explicitement à ce critère
+   - "transferable" : le CV apporte une compétence proche, issue d'un autre contexte
+   - "partiel" : le critère n'est que partiellement couvert
+   - "absent" : le critère n'apparaît pas dans le CV
+3. Pour chaque critère, fournis OBLIGATOIREMENT une justification factuelle citant les mots
+   du CV (avec employeur + période si disponibles).
+4. Analyse le profil complet du candidat : parcours, cohérence, compétences transférables,
+   comportement probable déduit du parcours, centres d'intérêt si mentionnés.
+5. Conclus par un "niveau_concordance" global parmi ces 4 valeurs UNIQUEMENT :
+   - "concordant" : le candidat répond à l'essentiel des critères de l'offre
+   - "potentiel" : des points forts réels, des lacunes à explorer en entretien
+   - "partiel" : correspondance partielle, à considérer si le vivier est limité
+   - "hors_perimetre" : trop d'écarts structurels avec l'offre
 
-SCORE GLOBAL ET SOUS-SCORES (obligatoires) :
-Calcule et justifie 3 sous-scores distincts, puis le score global pondéré :
-- score_competences_directes : Entier 0-100 — adéquation sur les compétences directes & adéquation poste (poids 50%)
-- score_competences_transferables : Entier 0-100 — compétences transférables & potentiel (poids 35%)
-- score_experience_sectorielle : Entier 0-100 — expérience sectorielle & cadre (poids 15%)
-- score : Entier 0-100 — score GLOBAL = (score_competences_directes*0.50) + (score_competences_transferables*0.35) + (score_experience_sectorielle*0.15), arrondi à l'entier le plus proche.
+Renvoie STRICTEMENT un objet JSON valide (aucun texte autour, aucun markdown) avec ces clés :
+- "nom" : Prénom Nom du candidat (ou "Inconnu")
+- "coordonnees" : téléphone et email si présents dans le CV
+- "niveau_concordance" : une des 4 valeurs ci-dessus
+- "criteres" : liste d'objets, chacun ayant :
+    - "critere" (str) : intitulé du critère issu de l'offre
+    - "niveau" (str) : "couvert", "transferable", "partiel" ou "absent"
+    - "justification" (str) : explication factuelle sourcée dans le CV
+- "synthese_profil" : objet avec les sous-clés :
+    - "lecture_parcours" (str) : analyse de la trajectoire professionnelle
+    - "competences_cles" (liste de str) : compétences clés identifiées dans le CV
+    - "competences_transferables" (liste de str) : compétences d'un autre secteur applicables au poste
+    - "indices_comportementaux" (liste de str) : traits déduits du parcours (avec conditionnel obligatoire)
+    - "points_forts_pour_ce_poste" (liste de str) : atouts spécifiques à l'offre
+    - "points_vigilance" (liste de str) : lacunes ou points à explorer en entretien
+    - "coherence_projet" (str) : cohérence du parcours avec le poste visé
+- "avis_recruteur" (str) : synthèse narrative de 5-8 lignes, ton professionnel, sourcée
 
-Renvoie STRICTEMENT un objet JSON valide (aucun texte autour, aucun markdown) avec exactement ces clés :
-- "nom": Prénom et Nom du candidat (ou "Inconnu")
-- "coordonnees": Téléphone et Email si présents dans le CV
-- "competences": liste d'objets, CHAQUE objet ayant les clés "label" (nom de la compétence, str) et "categorie" (une des 3 valeurs exactes: "demonstree", "fortement_probable", "transferable") et optionnellement "source" (employeur exact + période d'origine, obligatoire pour fortement_probable et transferable)
-- "score_competences_directes": entier 0-100
-- "score_competences_transferables": entier 0-100
-- "score_experience_sectorielle": entier 0-100
-- "score": entier 0-100 (score global pondéré calculé comme indiqué ci-dessus)
-- "justification": synthèse de 3-4 lignes expliquant le raisonnement global, en s'appuyant sur des éléments concrets du CV et en appliquant les règles d'attribution et de formulation ci-dessus.
-
-OFFRE :
+OFFRE D'EMPLOI :
 {texte_offre}
 
 CV :
 {texte_cv}
 """
                     response = model.generate_content(prompt)
+                    incrémenter_quota_ia(st.session_state.get("user_email"))
 
-                    # -------------------------------------------------------------------
-                    # BUG FIX : Parsing sécurisé — gère str, dict et blocs markdown
-                    # -------------------------------------------------------------------
                     raw = response.text
                     if isinstance(raw, dict):
                         data = raw
@@ -3451,7 +3658,6 @@ CV :
                         raw = raw.strip()
                         # Suppression des balises markdown code block
                         raw = raw.replace("```json", "").replace("```", "").strip()
-                        # Extraction du premier objet JSON {...} dans la réponse
                         debut = raw.find("{")
                         fin = raw.rfind("}")
                         if debut != -1 and fin != -1:
@@ -3461,245 +3667,135 @@ CV :
                         except json.JSONDecodeError as json_err:
                             raise ValueError(f"Réponse Gemini non parseable en JSON : {json_err} — Extrait : {raw[:200]}")
 
-                    # Normalisation des compétences (liste d'objets ou liste de strings legacy)
-                    competences_brutes = data.get("competences", [])
-                    competences_normalisees = []
-                    if isinstance(competences_brutes, list):
-                        for item in competences_brutes:
-                            if isinstance(item, dict):
-                                competences_normalisees.append({
-                                    "label": str(item.get("label", item.get("competence", ""))),
-                                    "categorie": item.get("categorie", "demonstree"),
-                                    "source": item.get("source", ""),
-                                })
-                            elif isinstance(item, str):
-                                competences_normalisees.append({"label": item, "categorie": "demonstree", "source": ""})
-                    elif isinstance(competences_brutes, str):
-                        competences_normalisees.append({"label": competences_brutes, "categorie": "demonstree", "source": ""})
+                    criteres = data.get("criteres", [])
+                    synthese = data.get("synthese_profil", {})
+                    competences_cles = synthese.get("competences_cles", [])
 
                     resultats_matching.append({
-                        "nom": data.get("nom", "Inconnu"),
-                        "coordonnees": data.get("coordonnees", "Non spécifié"),
-                        "competences_liste": competences_normalisees,
-                        "score_competences_directes": int(data.get("score_competences_directes", 0) or 0),
-                        "score_competences_transferables": int(data.get("score_competences_transferables", 0) or 0),
-                        "score_experience_sectorielle": int(data.get("score_experience_sectorielle", 0) or 0),
-                        "score": int(data.get("score", 0) or 0),
-                        "justification": data.get("justification", "Pas d'avis"),
+                        "nom": data.get("nom", fichier.name),
+                        "coordonnees": data.get("coordonnees", ""),
+                        "niveau_concordance": data.get("niveau_concordance", "partiel"),
+                        "criteres": criteres,
+                        "synthese_profil": synthese,
+                        "avis_recruteur": data.get("avis_recruteur", ""),
                         "cv_texte": texte_cv,
-                        # Champ legacy pour l'enregistrement vivier (résumé texte)
-                        "competences": " | ".join([c["label"] for c in competences_normalisees]),
+                        # Champ legacy pour l'enregistrement vivier
+                        "competences": " | ".join([str(c) for c in competences_cles]),
                     })
-
-                    incrémenter_quota_ia(st.session_state.get("user_email"))
 
                 except Exception as e:
                     st.error(f"Erreur fichier {fichier.name} : {e}")
 
             st.session_state['derniers_matchs'] = resultats_matching
-            st.success("Analyse terminée !")
-
-    # -----------------------------------------------------------------------
-    # RECHERCHE DANS LE VIVIER EXISTANT
-    # Permet de chercher si des candidats déjà en base correspondent à l'offre,
-    # en parallèle ou à la place des CV uploadés.
-    # -----------------------------------------------------------------------
-    st.markdown("---")
-    st.subheader("🗃️ Rechercher dans le vivier existant")
-    st.caption("L'IA compare l'offre saisie ci-dessus aux candidats déjà présents dans votre vivier et identifie les meilleurs profils.")
-
-    if st.button("🔍 CHERCHER DANS LE VIVIER", key="btn_chercher_vivier"):
-        if not texte_offre:
-            st.error("⚠️ Saisissez d'abord une offre ou description de poste dans le champ ci-dessus.")
-        elif not peut_utiliser_ia(st.session_state.get("user_email")):
-            st.error("⚠️ Quota IA atteint.")
-        else:
-            try:
-                c.execute(
-                    "SELECT id, nom, poste, competences, avis_ia, secteur_metier FROM candidats ORDER BY id DESC"
-                )
-                candidats_vivier = c.fetchall()
-                if not candidats_vivier:
-                    st.info("Le vivier est vide pour le moment.")
-                else:
-                    candidats_data = [
-                        {
-                            "id": row[0],
-                            "nom": row[1],
-                            "poste": row[2],
-                            "competences": (row[3] or "")[:400],  # limité pour ne pas exploser le contexte
-                            "secteur": row[5] or "",
-                        }
-                        for row in candidats_vivier
-                    ]
-                    with st.spinner(f"L'IA analyse {len(candidats_data)} candidat(s) du vivier..."):
-                        model_vivier = genai.GenerativeModel("gemini-2.5-flash")
-                        prompt_vivier = f"""Tu es un expert recruteur. Compare cette offre d'emploi aux candidats du vivier ci-dessous.
-
-OFFRE :
-{texte_offre}
-
-CANDIDATS DU VIVIER (id, nom, poste, compétences résumées) :
-{json.dumps(candidats_data, ensure_ascii=False)}
-
-Pour chaque candidat, évalue son adéquation avec l'offre.
-Renvoie STRICTEMENT un tableau JSON (aucun texte autour, aucun markdown), un objet par candidat, avec ces clés :
-- "id" : l'id du candidat (reprends-le tel quel)
-- "nom" : le nom du candidat
-- "score" : entier 0-100 représentant l'adéquation globale avec l'offre
-- "raison" : une phrase courte et factuelle expliquant le score (points forts et points faibles)
-
-N'inclus dans le résultat QUE les candidats avec un score >= 40. Trie par score décroissant."""
-                        resp_vivier = model_vivier.generate_content(prompt_vivier)
-                        resultats_vivier = _extraire_json_liste(resp_vivier.text)
-
-                    incrémenter_quota_ia(st.session_state.get("user_email"))
-
-                    # Enrichissement avec les données complètes depuis le fetch initial
-                    vivier_par_id = {row[0]: row for row in candidats_vivier}
-                    st.session_state["resultats_vivier_matching"] = [
-                        {**r, "poste": vivier_par_id.get(r.get("id"), (None,) * 6)[2] or "",
-                               "competences": vivier_par_id.get(r.get("id"), (None,) * 6)[3] or "",
-                               "secteur": vivier_par_id.get(r.get("id"), (None,) * 6)[5] or ""}
-                        for r in resultats_vivier if isinstance(r, dict) and r.get("id")
-                    ]
-                    if not st.session_state["resultats_vivier_matching"]:
-                        st.info("Aucun candidat du vivier n'atteint un score d'adéquation suffisant (≥ 40 %) avec cette offre.")
-                    else:
-                        st.success(f"✅ {len(st.session_state['resultats_vivier_matching'])} candidat(s) du vivier correspondent à cette offre.")
-
-            except Exception as e:
-                st.error(f"Erreur lors de la recherche dans le vivier : {e}")
-
-    # Affichage des résultats vivier
-    if st.session_state.get("resultats_vivier_matching"):
-        st.markdown("#### 🏆 Candidats du vivier correspondant à l'offre")
-        for res in st.session_state["resultats_vivier_matching"]:
-            score_v = int(res.get("score", 0) or 0)
-            couleur_v = "#2e7d32" if score_v >= 70 else ("#f59e0b" if score_v >= 40 else "#c53030")
-            st.markdown(f"""
-                <div style="background-color:#2d3748; border-radius:10px; padding:16px; margin-bottom:10px; border-left:5px solid {couleur_v};">
-                    <div style="display:flex; justify-content:space-between; align-items:center;">
-                        <span style="font-size:17px; font-weight:700; color:#ffffff;">🧑‍💼 {res.get('nom','Inconnu')}</span>
-                        <span style="background-color:{couleur_v}; color:white; padding:4px 14px; border-radius:20px; font-weight:700; font-size:16px;">{score_v}%</span>
-                    </div>
-                    <div style="color:#a3b1cc; font-size:13px; margin-top:4px;">
-                        {res.get('poste','') or '—'} · Secteur : {res.get('secteur','') or '—'}
-                    </div>
-                    <div style="color:#e2e8f0; font-size:13px; margin-top:8px;">
-                        💬 {res.get('raison','') or '—'}
-                    </div>
-                </div>
-            """, unsafe_allow_html=True)
-        if st.button("🗑️ Effacer les résultats vivier", key="btn_clear_vivier"):
-            st.session_state["resultats_vivier_matching"] = []
+            st.success("✅ Analyse terminée !")
             st.rerun()
 
-    # -----------------------------------------------------------------------
-    # AFFICHAGE DES RÉSULTATS CV UPLOADÉS
-    # -----------------------------------------------------------------------
-    if st.session_state['derniers_matchs']:
+    # ── Affichage des résultats ──────────────────────────────────────────────
+    if st.session_state.get('derniers_matchs'):
         st.markdown("---")
         st.subheader("📊 Résultats de l'analyse")
 
-        resultats_tries = sorted(
-            st.session_state['derniers_matchs'],
-            key=lambda x: int(x.get("score", 0) or 0),
-            reverse=True
-        )
-
-        # Palettes badges catégories compétences
-        BADGE_STYLES = {
-            "demonstree": ("✅ Démontrée", "#1b4332", "#d1fae5"),
-            "fortement_probable": ("🔍 Fortement probable", "#713f12", "#fef9c3"),
-            "transferable": ("🔄 Transférable", "#1e3a5f", "#dbeafe"),
+        NIVEAUX_CONCORDANCE = {
+            "concordant":     ("🟢 Profil concordant",    "#15803d", "#dcfce7"),
+            "potentiel":      ("🟡 Profil à potentiel",   "#a16207", "#fefce8"),
+            "partiel":        ("🟠 Profil à distance",    "#c2410c", "#fff7ed"),
+            "hors_perimetre": ("🔴 Hors périmètre",       "#b91c1c", "#fef2f2"),
+        }
+        NIVEAUX_CRITERE = {
+            "couvert":      ("✅ Couvert",       "#1b4332", "#d1fae5"),
+            "transferable": ("🔄 Transférable",  "#1e3a5f", "#dbeafe"),
+            "partiel":      ("⚠️ Partiel",        "#713f12", "#fef9c3"),
+            "absent":       ("❌ Absent",         "#7f1d1d", "#fee2e2"),
         }
 
+        ordre_nc = ["concordant", "potentiel", "partiel", "hors_perimetre"]
+        resultats_tries = sorted(
+            st.session_state['derniers_matchs'],
+            key=lambda x: ordre_nc.index(x.get("niveau_concordance", "partiel"))
+            if x.get("niveau_concordance") in ordre_nc else 3
+        )
+
         for i, cand in enumerate(resultats_tries):
-            score_global = int(cand.get("score", 0) or 0)
-            s_dir = int(cand.get("score_competences_directes", 0) or 0)
-            s_transf = int(cand.get("score_competences_transferables", 0) or 0)
-            s_sect = int(cand.get("score_experience_sectorielle", 0) or 0)
+            nc = cand.get("niveau_concordance", "partiel")
+            nc_label, nc_color, nc_bg = NIVEAUX_CONCORDANCE.get(nc, ("⚪ Non défini", "#64748b", "#f8fafc"))
+            synthese = cand.get("synthese_profil", {})
+            criteres = cand.get("criteres", [])
 
-            if score_global >= 70:
-                couleur_badge = "#2e7d32"
-            elif score_global >= 40:
-                couleur_badge = "#f59e0b"
-            else:
-                couleur_badge = "#c53030"
+            st.markdown(f"""
+                <div style="background-color:#2d3748; border-radius:10px; padding:20px;
+                            margin-bottom:8px; border-left:6px solid {nc_color};">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-size:20px; font-weight:700; color:#ffffff;">{html.escape(str(cand.get('nom','Inconnu')))}</span>
+                        <span style="background-color:{nc_color}; color:white; padding:6px 18px;
+                                     border-radius:20px; font-weight:700; font-size:14px;">{nc_label}</span>
+                    </div>
+                    <div style="color:#a3b1cc; font-size:13px; margin-top:6px;">{html.escape(str(cand.get('coordonnees','')))}</div>
+                </div>
+            """, unsafe_allow_html=True)
 
-            with st.container():
-                # --- En-tête candidat + score global ---
+            st.markdown("##### 📋 Analyse critère par critère — Offre × CV")
+            for cr in criteres:
+                niv = cr.get("niveau", "absent")
+                niv_label, niv_bg, niv_txt = NIVEAUX_CRITERE.get(niv, ("⚪", "#64748b", "#f8fafc"))
+                just = html.escape(str(cr.get("justification", "")))
+                crit = html.escape(str(cr.get("critere", "")))
                 st.markdown(f"""
-                    <div style="background-color: #2d3748; border-radius: 10px; padding: 18px; margin-bottom: 10px; border-left: 5px solid {couleur_badge};">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <span style="font-size: 18px; font-weight: 700; color: #ffffff;">{cand.get('nom', 'Inconnu')}</span>
-                            <span style="background-color: {couleur_badge}; color: white; padding: 4px 14px; border-radius: 20px; font-weight: 700; font-size: 18px;">Score global : {score_global}%</span>
+                    <div style="background:{niv_txt}; border-left:4px solid {niv_bg};
+                                padding:10px 14px; border-radius:6px; margin-bottom:6px;">
+                        <div style="display:flex; gap:12px; align-items:flex-start;">
+                            <span style="background:{niv_bg}; color:white; padding:2px 10px;
+                                         border-radius:12px; font-size:12px; font-weight:600;
+                                         white-space:nowrap; margin-top:2px;">{niv_label}</span>
+                            <div>
+                                <div style="font-weight:600; color:#1e293b; font-size:13px;">{crit}</div>
+                                <div style="color:#475569; font-size:12px; margin-top:3px;">{just}</div>
+                            </div>
                         </div>
-                        <div style="color: #a3b1cc; font-size: 13px; margin-top: 4px;">{cand.get('coordonnees', 'Non spécifié')}</div>
                     </div>
                 """, unsafe_allow_html=True)
 
-                # --- AMÉLIORATION 1 : Sous-scores pondérés avec barres de progression ---
-                st.markdown("##### 📐 Détail du score — Transparence de la pondération")
-                col_s1, col_s2, col_s3 = st.columns(3)
-                with col_s1:
-                    st.metric(label="🎯 Compétences directes & poste (50%)", value=f"{s_dir}%")
-                    st.progress(min(1.0, s_dir / 100))
-                    contribution_dir = round(s_dir * 0.50)
-                    st.caption(f"Contribution au score global : **{contribution_dir} pts**")
-                with col_s2:
-                    st.metric(label="🌱 Compétences transférables & potentiel (35%)", value=f"{s_transf}%")
-                    st.progress(min(1.0, s_transf / 100))
-                    contribution_transf = round(s_transf * 0.35)
-                    st.caption(f"Contribution au score global : **{contribution_transf} pts**")
-                with col_s3:
-                    st.metric(label="🏭 Expérience sectorielle & cadre (15%)", value=f"{s_sect}%")
-                    st.progress(min(1.0, s_sect / 100))
-                    contribution_sect = round(s_sect * 0.15)
-                    st.caption(f"Contribution au score global : **{contribution_sect} pts**")
+            with st.expander(f"🧠 Profil complet — {cand.get('nom','Inconnu')}"):
+                col_g, col_d = st.columns(2)
+                with col_g:
+                    st.markdown("**💼 Lecture du parcours**")
+                    st.write(synthese.get("lecture_parcours", "—"))
+                    st.markdown("**🏆 Points forts pour ce poste**")
+                    for pf in synthese.get("points_forts_pour_ce_poste", []):
+                        st.markdown(f"- {html.escape(str(pf))}")
+                    st.markdown("**🔄 Compétences transférables**")
+                    for ct in synthese.get("competences_transferables", []):
+                        st.markdown(f"- {html.escape(str(ct))}")
+                with col_d:
+                    st.markdown("**🔍 Indices comportementaux**")
+                    for ib in synthese.get("indices_comportementaux", []):
+                        st.markdown(f"- {html.escape(str(ib))}")
+                    st.markdown("**⚠️ Points de vigilance**")
+                    for pv in synthese.get("points_vigilance", []):
+                        st.markdown(f"- {html.escape(str(pv))}")
+                    st.markdown("**🔗 Cohérence du projet**")
+                    st.write(synthese.get("coherence_projet", "—"))
 
-                # --- AMÉLIORATION 2 : Compétences catégorisées par badges ---
-                with st.expander(f"📋 Détail des compétences et synthèse — {cand.get('nom', 'Inconnu')}"):
-                    competences_liste = cand.get("competences_liste", [])
+                st.markdown("---")
+                st.markdown("**💬 Avis du recruteur IA**")
+                st.write(cand.get("avis_recruteur", "—"))
 
-                    if competences_liste:
-                        st.markdown("##### 🏷️ Compétences extraites du CV — classées par catégorie")
+                try:
+                    pdf_buf = _generer_pdf_matching(cand, texte_offre if 'texte_offre' in dir() else "")
+                    st.download_button(
+                        label="📥 Télécharger le dossier PDF",
+                        data=pdf_buf,
+                        file_name=f"OmniRecrut_Matching_{str(cand.get('nom','candidat')).replace(' ','_')}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                        type="primary",
+                        key=f"dl_matching_pdf_{i}"
+                    )
+                except Exception as e_pdf:
+                    st.caption(f"PDF indisponible : {e_pdf}")
 
-                        for cat_key, (cat_label, bg_color, text_color) in BADGE_STYLES.items():
-                            items_cat = [c for c in competences_liste if c.get("categorie") == cat_key]
-                            if items_cat:
-                                st.markdown(f"**{cat_label}**")
-                                badges_html = ""
-                                for comp in items_cat:
-                                    label = comp.get("label", "").replace("<", "&lt;").replace(">", "&gt;")
-                                    source = comp.get("source", "")
-                                    # Échappement des guillemets dans l'attribut title pour éviter
-                                    # de casser le HTML (source peut contenir des " ex: "Société XYZ")
-                                    source_title = source.replace('"', "&quot;").replace("'", "&#39;").replace("<", "&lt;").replace(">", "&gt;")
-                                    source_display = source.replace("<", "&lt;").replace(">", "&gt;")
-                                    title_attr = f' title="{source_title}"' if source_title else ""
-                                    badges_html += (
-                                        f'<span{title_attr} style="background-color:{bg_color}; color:{text_color}; '
-                                        f'border: 1px solid {text_color}; padding:4px 11px; border-radius:14px; '
-                                        f'margin-right:6px; margin-bottom:6px; font-size:12px; display:inline-block;">'
-                                        f'{label}</span>'
-                                    )
-                                    if source_display:
-                                        badges_html += (
-                                            f'<span style="color:#94a3b8; font-size:11px; font-style:italic; '
-                                            f'margin-right:10px;">↳ {source_display}</span>'
-                                        )
-                                st.markdown(badges_html + "<br>", unsafe_allow_html=True)
-                    else:
-                        st.caption("Aucune compétence extraite pour ce CV.")
+            st.markdown("<br>", unsafe_allow_html=True)
 
-                    st.markdown("---")
-                    st.markdown("**💬 Synthèse du recruteur IA**")
-                    st.write(cand.get("justification", "Pas d'avis"))
-
-                st.markdown("<br>", unsafe_allow_html=True)
-
+    # ── Enregistrement dans le vivier ──────────────────────────────────────────
     st.markdown("---")
     st.subheader("📥 Enregistrement ciblé dans le Vivier")
     secteur_pour_import = st.selectbox("Assigner ces candidats au secteur :", LISTE_SECTEURS[1:])
@@ -3709,24 +3805,30 @@ N'inclus dans le résultat QUE les candidats avec un score >= 40. Trie par score
             st.warning("⚠️ Aucun résultat d'analyse en mémoire.")
         else:
             try:
+                conn_v = get_connexion_saine()
+                c_v = conn_v.cursor()
                 for cand in st.session_state['derniers_matchs']:
-                    c.execute(
-                        """INSERT INTO candidats (nom, poste, competences, statut, categorie_ia, avis_ia, score_matching, secteur_metier, cv_texte, date_ajout)
+                    synthese_v = cand.get("synthese_profil", {})
+                    competences_str = cand.get("competences", "")
+                    avis = cand.get("avis_recruteur", "")
+                    nc = cand.get("niveau_concordance", "partiel")
+                    c_v.execute(
+                        """INSERT INTO candidats (nom, poste, competences, statut, categorie_ia,
+                           avis_ia, score_matching, secteur_metier, cv_texte, date_ajout)
                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                         (
                             cand["nom"],
                             "Profil Analysé",
-                            f"{cand['coordonnees']} | {cand['competences']}",
+                            f"{cand.get('coordonnees','')} | {competences_str}",
                             "Nouveau",
                             "À Classer",
-                            cand["justification"],
-                            f"{cand['score']} %",
+                            avis,
+                            nc,
                             secteur_pour_import,
                             cand.get("cv_texte", ""),
                             datetime.datetime.now().isoformat(),
                         )
                     )
-                conn.commit()
                 _charger_vivier_candidats.clear()
                 st.success(f"✅ Candidat(s) enregistré(s) dans le secteur '{secteur_pour_import}' !")
                 st.session_state['derniers_matchs'] = []
