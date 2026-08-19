@@ -3690,105 +3690,6 @@ CV :
             st.success("✅ Analyse terminée !")
             st.rerun()
 
-    # ── Recherche dans le vivier existant ────────────────────────────────────
-    st.markdown("---")
-    st.subheader("🗃️ Rechercher dans le vivier existant")
-    st.caption("L'IA compare l'offre saisie ci-dessus aux candidats déjà présents dans votre vivier et identifie les meilleurs profils.")
-
-    if st.button("🔍 CHERCHER DANS LE VIVIER", key="btn_chercher_vivier"):
-        if not texte_offre:
-            st.error("⚠️ Saisissez d'abord une offre ou description de poste dans le champ ci-dessus.")
-        elif not peut_utiliser_ia(st.session_state.get("user_email")):
-            st.error("⚠️ Quota IA atteint.")
-        else:
-            try:
-                conn_viv = get_connexion_saine()
-                c_viv = conn_viv.cursor()
-                c_viv.execute(
-                    "SELECT id, nom, poste, competences, avis_ia, secteur_metier FROM candidats ORDER BY id DESC"
-                )
-                candidats_vivier = c_viv.fetchall()
-                if not candidats_vivier:
-                    st.info("Le vivier est vide pour le moment.")
-                else:
-                    candidats_data = [
-                        {
-                            "id": row[0],
-                            "nom": row[1],
-                            "poste": row[2],
-                            "competences": (row[3] or "")[:400],
-                            "secteur": row[5] or "",
-                        }
-                        for row in candidats_vivier
-                    ]
-                    with st.spinner(f"L'IA analyse {len(candidats_data)} candidat(s) du vivier..."):
-                        model_vivier = genai.GenerativeModel("gemini-2.5-flash")
-                        prompt_vivier = f"""Tu es un expert recruteur. Compare cette offre d'emploi aux candidats du vivier ci-dessous.
-
-OFFRE :
-{texte_offre}
-
-CANDIDATS DU VIVIER (id, nom, poste, compétences résumées) :
-{json.dumps(candidats_data, ensure_ascii=False)}
-
-Pour chaque candidat, évalue son adéquation avec l'offre.
-Renvoie STRICTEMENT un tableau JSON (aucun texte autour, aucun markdown), un objet par candidat, avec ces clés :
-- "id" : l'id du candidat (reprends-le tel quel)
-- "nom" : le nom du candidat
-- "niveau" : l'une de ces 4 valeurs EXACTES selon l'adéquation : "concordant", "potentiel", "partiel", "hors_perimetre"
-- "raison" : une phrase courte et factuelle expliquant le niveau (points forts et points faibles)
-
-N'inclus dans le résultat QUE les candidats avec un niveau "concordant", "potentiel" ou "partiel". Trie par niveau décroissant (concordant en premier)."""
-                        resp_vivier = model_vivier.generate_content(prompt_vivier)
-                        incrémenter_quota_ia(st.session_state.get("user_email"))
-                        resultats_vivier = _extraire_json_liste(resp_vivier.text)
-
-                    vivier_par_id = {row[0]: row for row in candidats_vivier}
-                    st.session_state["resultats_vivier_matching"] = [
-                        {**r,
-                         "poste": vivier_par_id.get(r.get("id"), (None,) * 6)[2] or "",
-                         "competences": vivier_par_id.get(r.get("id"), (None,) * 6)[3] or "",
-                         "secteur": vivier_par_id.get(r.get("id"), (None,) * 6)[5] or ""}
-                        for r in resultats_vivier if isinstance(r, dict) and r.get("id")
-                    ]
-                    if not st.session_state["resultats_vivier_matching"]:
-                        st.info("Aucun candidat du vivier ne correspond suffisamment à cette offre.")
-                    else:
-                        st.success(f"✅ {len(st.session_state['resultats_vivier_matching'])} candidat(s) du vivier correspondent à cette offre.")
-            except Exception as e:
-                st.error(f"Erreur lors de la recherche dans le vivier : {e}")
-
-    if st.session_state.get("resultats_vivier_matching"):
-        NIVEAUX_VIVIER = {
-            "concordant":     ("🟢 Profil concordant",  "#15803d"),
-            "potentiel":      ("🟡 Profil à potentiel", "#a16207"),
-            "partiel":        ("🟠 Profil à distance",  "#c2410c"),
-            "hors_perimetre": ("🔴 Hors périmètre",     "#b91c1c"),
-        }
-        st.markdown("#### 🏆 Candidats du vivier correspondant à l'offre")
-        for res in st.session_state["resultats_vivier_matching"]:
-            niv_v = res.get("niveau", "partiel")
-            niv_label_v, couleur_v = NIVEAUX_VIVIER.get(niv_v, ("⚪ Non défini", "#64748b"))
-            st.markdown(f"""
-                <div style="background-color:#2d3748; border-radius:10px; padding:16px;
-                            margin-bottom:10px; border-left:5px solid {couleur_v};">
-                    <div style="display:flex; justify-content:space-between; align-items:center;">
-                        <span style="font-size:17px; font-weight:700; color:#ffffff;">🧑‍💼 {html.escape(str(res.get('nom','Inconnu')))}</span>
-                        <span style="background-color:{couleur_v}; color:white; padding:4px 14px;
-                                     border-radius:20px; font-weight:700; font-size:13px;">{niv_label_v}</span>
-                    </div>
-                    <div style="color:#a3b1cc; font-size:13px; margin-top:4px;">
-                        {html.escape(str(res.get('poste','') or '—'))} · Secteur : {html.escape(str(res.get('secteur','') or '—'))}
-                    </div>
-                    <div style="color:#e2e8f0; font-size:13px; margin-top:8px;">
-                        💬 {html.escape(str(res.get('raison','') or '—'))}
-                    </div>
-                </div>
-            """, unsafe_allow_html=True)
-        if st.button("🗑️ Effacer les résultats vivier", key="btn_clear_vivier"):
-            st.session_state["resultats_vivier_matching"] = []
-            st.rerun()
-
     # ── Affichage des résultats ──────────────────────────────────────────────
     if st.session_state.get('derniers_matchs'):
         st.markdown("---")
@@ -3899,14 +3800,6 @@ N'inclus dans le résultat QUE les candidats avec un niveau "concordant", "poten
     st.subheader("📥 Enregistrement ciblé dans le Vivier")
     secteur_pour_import = st.selectbox("Assigner ces candidats au secteur :", LISTE_SECTEURS[1:])
 
-    # Labels lisibles pour le champ score_matching en base
-    _LABELS_NC_VIVIER = {
-        "concordant":     "🟢 Profil concordant",
-        "potentiel":      "🟡 Profil à potentiel",
-        "partiel":        "🟠 Profil à distance",
-        "hors_perimetre": "🔴 Hors périmètre",
-    }
-
     if st.button("📥 CONFIRMER L'ENREGISTREMENT DANS LE VIVIER"):
         if not st.session_state['derniers_matchs']:
             st.warning("⚠️ Aucun résultat d'analyse en mémoire.")
@@ -3914,21 +3807,43 @@ N'inclus dans le résultat QUE les candidats avec un niveau "concordant", "poten
             try:
                 conn_v = get_connexion_saine()
                 c_v = conn_v.cursor()
+
+                _LABELS_NC_VIVIER = {
+                    "concordant":     "🟢 Profil concordant",
+                    "potentiel":      "🟡 Profil à potentiel",
+                    "partiel":        "🟠 Profil à distance",
+                    "hors_perimetre": "🔴 Hors périmètre",
+                }
+
+                def _to_str(val):
+                    """Convertit n'importe quelle valeur (str, dict, list) en chaîne propre."""
+                    if isinstance(val, dict):
+                        return str(val.get("label", val.get("nom", str(val))))
+                    if isinstance(val, list):
+                        return " | ".join([_to_str(v) for v in val if v])
+                    return str(val or "")
+
                 for cand in st.session_state['derniers_matchs']:
-                    synthese_v   = cand.get("synthese_profil", {})
-                    competences_str = cand.get("competences", "")  # compétences clés jointes
-                    coordonnees  = cand.get("coordonnees", "")
-                    avis         = cand.get("avis_recruteur", "")
-                    nc           = cand.get("niveau_concordance", "partiel")
-                    nc_label     = _LABELS_NC_VIVIER.get(nc, nc)
+                    synthese_v  = cand.get("synthese_profil", {}) or {}
+                    coordonnees = _to_str(cand.get("coordonnees", ""))
+                    avis        = _to_str(cand.get("avis_recruteur", ""))
+                    nc          = cand.get("niveau_concordance", "partiel")
+                    nc_label    = _LABELS_NC_VIVIER.get(nc, nc)
 
-                    # Poste : on tente de l'extraire depuis la synthèse,
-                    # sinon on indique "Profil Analysé (Matching IA)"
-                    poste_envisage = synthese_v.get("poste_cible", "") or \
-                                     synthese_v.get("competences_cles", [""])[0] if synthese_v.get("competences_cles") else ""
-                    poste_stocke = poste_envisage if poste_envisage else "Profil Analysé (Matching IA)"
+                    # Compétences clés depuis la synthèse — robuste quel que soit le type
+                    raw_cles = synthese_v.get("competences_cles", [])
+                    if isinstance(raw_cles, list):
+                        competences_str = " | ".join([_to_str(c) for c in raw_cles if c])
+                    else:
+                        competences_str = _to_str(raw_cles)
 
-                    # competences = coordonnées + compétences clés (comme avant)
+                    # Poste : première compétence clé ou fallback
+                    if isinstance(raw_cles, list) and raw_cles:
+                        poste_stocke = _to_str(raw_cles[0])
+                    else:
+                        poste_stocke = "Profil Analysé (Matching IA)"
+
+                    # Champ competences = coordonnées + compétences clés
                     competences_stockees = " | ".join(filter(None, [coordonnees, competences_str]))
 
                     c_v.execute(
@@ -3936,13 +3851,13 @@ N'inclus dans le résultat QUE les candidats avec un niveau "concordant", "poten
                            avis_ia, score_matching, secteur_metier, cv_texte, date_ajout)
                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                         (
-                            cand["nom"],
+                            _to_str(cand.get("nom", "Inconnu")),
                             poste_stocke,
                             competences_stockees,
                             "Nouveau",
                             "À Classer",
                             avis,
-                            nc_label,          # ex : "🟢 Profil concordant"
+                            nc_label,
                             secteur_pour_import,
                             cand.get("cv_texte", ""),
                             datetime.datetime.now().isoformat(),
