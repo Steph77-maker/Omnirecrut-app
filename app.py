@@ -2492,7 +2492,9 @@ def generer_pdf_candidat(nom, poste, score_global, traits_dominants,
 # FONCTION : affichage profil candidat enrichi (vivier)
 # ==============================================================================
 def afficher_profil_candidat_enrichi(infos_candidat, conn):
-    """Affiche le profil comportemental enrichi + bouton téléchargement PDF."""
+    """Affiche le profil enrichi — adapté selon la source de l'analyse
+    (vivier sans offre → profil comportemental complet ;
+     matching CV×offre → affichage structuré depuis avis_ia)."""
     candidat_id = int(infos_candidat.get("ID", 0))
     nom = infos_candidat.get("Nom", "Candidat")
     poste = infos_candidat.get("Poste", "—")
@@ -2533,73 +2535,125 @@ def afficher_profil_candidat_enrichi(infos_candidat, conn):
     profil_comportemental = _parse(profil_json_brut) or {}
     transferables         = _parse(transferables_json) or []
     metiers_cibles        = _parse(metiers_json) or []
-    score_global          = _score(score_matching_brut)
 
-    hard_skills = []
-    if hard_skills_brut:
-        items = [x.strip() for x in str(hard_skills_brut).split(",") if x.strip()]
-        hard_skills = [x for x in items if "@" not in x]
+    # ── Détection de la source de l'analyse ──────────────────────────────────
+    # Si profil_riasec est vide, l'analyse vient du matching IA CV×offre.
+    # Le compte-rendu est alors dans avis_ia (avis_complet), pas dans les
+    # colonnes structurées (profil_riasec, competences_transferables, etc.).
+    est_profil_matching = not profil_json_brut and avis_complet.strip()
 
-    traits_dominants = profil_comportemental.get("traits_dominants", [])
-    indices_parcours = profil_comportemental.get("indices_parcours_pro", "")
-    indices_centres  = profil_comportemental.get("indices_centres_interet", "")
-    coherence_projet = profil_comportemental.get("coherence_projet_pro", "")
-    style_cv         = profil_comportemental.get("style_cv", "")
+    # ── Labels de concordance (matching) ─────────────────────────────────────
+    LABELS_NC = {
+        "concordant":     ("🟢 Profil concordant",   "#15803d"),
+        "potentiel":      ("🟡 Profil à potentiel",  "#a16207"),
+        "partiel":        ("🟠 Profil à distance",   "#c2410c"),
+        "hors_perimetre": ("🔴 Hors périmètre",      "#b91c1c"),
+    }
 
-    # ── Échappement HTML de toutes les variables issues de la BDD ─────────────
-    # Évite le XSS stocké : un CV contenant du HTML/JS malveillant ne serait pas
-    # exécuté dans le navigateur des autres utilisateurs consultant ce profil.
+    # ── Score / niveau ────────────────────────────────────────────────────────
+    score_brut = str(score_matching_brut or "").strip()
+    # Chercher une clé de concordance dans le score stocké
+    nc_key = None
+    for k in LABELS_NC:
+        if k in score_brut.lower():
+            nc_key = k
+            break
+    # Chercher un emoji de concordance dans le score stocké
+    if not nc_key:
+        for k, (lbl, _) in LABELS_NC.items():
+            if lbl.split()[0] in score_brut:  # emoji
+                nc_key = k
+                break
+
+    if nc_key:
+        nc_label, nc_color = LABELS_NC[nc_key]
+        score_global = 0  # pas de % pour les profils matching
+        est_profil_matching = True
+    else:
+        score_global = _score(score_matching_brut)
+        nc_label, nc_color = None, None
+
+    # ── Échappement HTML ──────────────────────────────────────────────────────
     nom_h              = html.escape(str(nom or ""))
     poste_h            = html.escape(str(poste or ""))
     avis_complet_h     = html.escape(str(avis_complet or ""))
-    indices_parcours_h = html.escape(str(indices_parcours or ""))
-    indices_centres_h  = html.escape(str(indices_centres or ""))
-    coherence_projet_h = html.escape(str(coherence_projet or ""))
-    style_cv_h         = html.escape(str(style_cv or ""))
-    traits_dominants_h = [html.escape(str(t)) for t in traits_dominants]
-    hard_skills_h      = [html.escape(str(hs)) for hs in hard_skills]
-    transferables_h    = [html.escape(str(c)) for c in transferables]
-    metiers_cibles_h   = [html.escape(str(m)) for m in metiers_cibles]
-    # score_global est un int (converti par _score()), pas besoin d'échappement
-    # couleur_score est un littéral hex fixe défini dans le code, pas de risque
 
     st.markdown("---")
 
-    # ── En-tête score + bouton PDF ────────────────────────────────────────────
-    couleur_score = "#16a34a" if score_global >= 70 else "#ea580c" if score_global >= 45 else "#dc2626"
+    # ── En-tête : cercle score OU badge concordance + bouton PDF ─────────────
     col_entete, col_pdf = st.columns([4, 1])
-
     with col_entete:
-        st.markdown(f"""
-            <div style="display:flex; align-items:center; gap:18px; margin-bottom:10px;">
-                <div style="background:{couleur_score}; color:white; border-radius:50%;
-                            width:72px; height:72px; display:flex; align-items:center;
-                            justify-content:center; font-size:22px; font-weight:800;
-                            flex-shrink:0;">{score_global}%</div>
-                <div>
-                    <div style="font-size:20px; font-weight:700; color:#e2e8f0;">{nom_h}</div>
-                    <div style="color:#94a3b8; font-size:13px;">{poste_h}</div>
-                    <div style="color:{couleur_score}; font-size:12px; font-weight:600; margin-top:2px;">
-                        Score d'employabilité global estimé
+        if nc_key:
+            # Profil venant du matching → badge qualitatif
+            st.markdown(f"""
+                <div style="display:flex; align-items:center; gap:18px; margin-bottom:10px;">
+                    <div style="background:{nc_color}; color:white; border-radius:12px;
+                                padding:10px 20px; font-size:14px; font-weight:800;
+                                flex-shrink:0; white-space:nowrap;">{nc_label}</div>
+                    <div>
+                        <div style="font-size:20px; font-weight:700; color:#e2e8f0;">{nom_h}</div>
+                        <div style="color:#94a3b8; font-size:13px;">{poste_h}</div>
+                        <div style="color:{nc_color}; font-size:12px; font-weight:600; margin-top:2px;">
+                            Niveau de concordance CV × Offre
+                        </div>
                     </div>
                 </div>
-            </div>
-        """, unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
+        else:
+            # Profil venant du vivier → cercle numérique
+            couleur_score = "#16a34a" if score_global >= 70 else "#ea580c" if score_global >= 45 else "#dc2626"
+            st.markdown(f"""
+                <div style="display:flex; align-items:center; gap:18px; margin-bottom:10px;">
+                    <div style="background:{couleur_score}; color:white; border-radius:50%;
+                                width:72px; height:72px; display:flex; align-items:center;
+                                justify-content:center; font-size:22px; font-weight:800;
+                                flex-shrink:0;">{score_global}%</div>
+                    <div>
+                        <div style="font-size:20px; font-weight:700; color:#e2e8f0;">{nom_h}</div>
+                        <div style="color:#94a3b8; font-size:13px;">{poste_h}</div>
+                        <div style="color:{couleur_score}; font-size:12px; font-weight:600; margin-top:2px;">
+                            Score d'employabilité global estimé
+                        </div>
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
 
     with col_pdf:
         try:
-            pdf_buffer = generer_pdf_candidat(
-                nom=nom, poste=poste, score_global=score_global,
-                traits_dominants=traits_dominants,
-                indices_parcours=indices_parcours,
-                indices_centres=indices_centres,
-                coherence_projet=coherence_projet,
-                hard_skills=hard_skills,
-                transferables=transferables,
-                metiers_cibles=metiers_cibles,
-                avis_complet=avis_complet,
-                style_cv=style_cv
-            )
+            if nc_key:
+                # PDF matching
+                cand_dict = {
+                    "nom": nom,
+                    "coordonnees": "",
+                    "niveau_concordance": nc_key,
+                    "criteres": [],
+                    "synthese_profil": {},
+                    "avis_recruteur": avis_complet,
+                }
+                pdf_buffer = _generer_pdf_matching(cand_dict)
+            else:
+                # PDF vivier
+                traits_dominants = profil_comportemental.get("traits_dominants", [])
+                indices_parcours = profil_comportemental.get("indices_parcours_pro", "")
+                indices_centres  = profil_comportemental.get("indices_centres_interet", "")
+                coherence_projet = profil_comportemental.get("coherence_projet_pro", "")
+                style_cv         = profil_comportemental.get("style_cv", "")
+                hard_skills = []
+                if hard_skills_brut:
+                    items = [x.strip() for x in str(hard_skills_brut).split(",") if x.strip()]
+                    hard_skills = [x for x in items if "@" not in x]
+                pdf_buffer = generer_pdf_candidat(
+                    nom=nom, poste=poste, score_global=score_global,
+                    traits_dominants=traits_dominants,
+                    indices_parcours=indices_parcours,
+                    indices_centres=indices_centres,
+                    coherence_projet=coherence_projet,
+                    hard_skills=hard_skills,
+                    transferables=transferables,
+                    metiers_cibles=metiers_cibles,
+                    avis_complet=avis_complet,
+                    style_cv=style_cv
+                )
             nom_fichier = f"OmniRecrut_{nom.replace(' ', '_')}.pdf"
             st.download_button(
                 label="📥 Télécharger le dossier PDF",
@@ -2620,135 +2674,217 @@ def afficher_profil_candidat_enrichi(infos_candidat, conn):
     )
     st.markdown("---")
 
-    # ── Bloc 1 : Traits comportementaux (badges visuels) ─────────────────────
-    st.markdown("#### 🧠 Empreinte comportementale")
-    if traits_dominants_h:
-        nb = min(len(traits_dominants_h), 5)
-        cols = st.columns(nb)
-        couleurs = ["#2563eb", "#7c3aed", "#0891b2", "#059669", "#d97706"]
-        for i, trait_h in enumerate(traits_dominants_h[:nb]):
-            lettre = trait_h.strip()[0].upper() if trait_h.strip() else "?"
-            mot_court = trait_h.strip().split()[0][:10] if trait_h.strip() else "Trait"
-            with cols[i]:
-                st.markdown(f"""
-                    <div style="text-align:center; background:#1e293b; border-radius:12px;
-                                padding:14px 8px; border:2px solid {couleurs[i % len(couleurs)]};">
-                        <div style="font-size:28px; font-weight:800;
-                                    color:{couleurs[i % len(couleurs)]};">{lettre}</div>
-                        <div style="font-size:11px; color:#94a3b8;
-                                    margin-top:4px; font-weight:600;">{mot_court}</div>
-                    </div>
-                """, unsafe_allow_html=True)
-        st.markdown("")
-        for trait_h in traits_dominants_h:
+    # ══════════════════════════════════════════════════════════════════════════
+    # BRANCHE A — Profil venant du MATCHING IA CV×Offre
+    # ══════════════════════════════════════════════════════════════════════════
+    if est_profil_matching:
+        st.info("ℹ️ Ce profil a été enregistré depuis l'onglet **Matching IA CV × Offre**. "
+                "L'analyse détaillée est disponible dans le compte-rendu ci-dessous.")
+
+        # Compétences stockées dans le champ competences (coordonnées | compétences clés)
+        competences_raw = str(hard_skills_brut or "")
+        # Séparer coordonnées et compétences (format : "email | tel | comp1 | comp2 ...")
+        parties = [p.strip() for p in competences_raw.split("|") if p.strip()]
+        coordonnees_affiche = []
+        competences_affiche = []
+        for p in parties:
+            if "@" in p or p.startswith("0") or p.startswith("+") or "telephone" in p.lower():
+                coordonnees_affiche.append(p)
+            else:
+                competences_affiche.append(p)
+
+        col_g, col_d = st.columns(2)
+        with col_g:
+            st.markdown("#### 📞 Coordonnées")
+            if coordonnees_affiche:
+                for c in coordonnees_affiche:
+                    st.markdown(f"- {html.escape(c)}")
+            else:
+                st.caption("Non renseignées.")
+
+            st.markdown("#### 🛠️ Compétences clés identifiées")
+            if competences_affiche:
+                badges = "".join([
+                    f'<span style="display:inline-block; background:#1e3a5f; color:#93c5fd; '
+                    f'border-radius:20px; padding:4px 12px; margin:3px; font-size:12px; '
+                    f'font-weight:600;">{html.escape(c)}</span>'
+                    for c in competences_affiche[:12]
+                ])
+                st.markdown(f'<div style="line-height:2.2;">{badges}</div>', unsafe_allow_html=True)
+            else:
+                st.caption("Non extraites.")
+
+        with col_d:
+            st.markdown("#### 🎯 Niveau de concordance")
+            nc_label_aff, nc_color_aff = LABELS_NC.get(nc_key, ("—", "#64748b"))
             st.markdown(f"""
-                <div style="background:#1e293b; border-left:3px solid #2563eb;
-                            border-radius:6px; padding:10px 14px; margin-bottom:6px;
-                            color:#cbd5e1; font-size:13px;">🔹 {trait_h}</div>
+                <div style="background:#1e293b; border-left:4px solid {nc_color_aff};
+                            border-radius:8px; padding:14px; color:#e2e8f0; font-size:14px;
+                            font-weight:700;">{nc_label_aff}</div>
             """, unsafe_allow_html=True)
-    else:
-        st.info("Aucun trait comportemental extrait pour ce candidat.")
-    st.markdown("---")
 
-    # ── Bloc 2 : Parcours + Centres d'intérêt ────────────────────────────────
-    col_parc, col_cent = st.columns(2)
-    with col_parc:
-        st.markdown("#### 💼 Lecture du parcours professionnel")
-        if indices_parcours_h:
-            st.markdown(f"""
-                <div style="background:#1e293b; border-radius:8px; padding:14px;
-                            color:#cbd5e1; font-size:13px; line-height:1.6;">{indices_parcours_h}</div>
-            """, unsafe_allow_html=True)
-        else:
-            st.caption("Non renseigné.")
-    with col_cent:
-        st.markdown("#### 🎯 Centres d'intérêt & engagements")
-        if indices_centres_h and indices_centres_h.strip().lower() not in ("aucun", "non mentionné", ""):
-            st.markdown(f"""
-                <div style="background:#1e293b; border-radius:8px; padding:14px;
-                            color:#cbd5e1; font-size:13px; line-height:1.6;">{indices_centres_h}</div>
-            """, unsafe_allow_html=True)
-        else:
-            st.caption("Aucun centre d'intérêt mentionné dans le CV.")
-    if coherence_projet_h:
-        st.markdown("#### 🔗 Cohérence du projet professionnel")
-        st.markdown(f"""
-            <div style="background:#0f2027; border:1px solid #2563eb; border-radius:8px;
-                        padding:14px; color:#93c5fd; font-size:13px; line-height:1.6;">
-                {coherence_projet_h}</div>
-        """, unsafe_allow_html=True)
-
-    # ── Style visuel du CV ────────────────────────────────────────────────────
-    if style_cv_h and "Non analysé" not in style_cv_h:
-        st.markdown("#### 🎨 Lecture du style visuel du CV")
-        st.markdown(f"""
-            <div style="background:#1a1a2e; border:1px solid #7c3aed; border-radius:8px;
-                        padding:14px; color:#c4b5fd; font-size:13px; line-height:1.6;
-                        display:flex; gap:12px; align-items:flex-start;">
-                <span style="font-size:20px; flex-shrink:0;">🖼️</span>
-                <span>{style_cv_h}</span>
-            </div>
-        """, unsafe_allow_html=True)
-    st.markdown("---")
-
-    # ── Bloc 3 : Compétences ──────────────────────────────────────────────────
-    col_hard, col_transf = st.columns(2)
-    with col_hard:
-        st.markdown("#### 🛠️ Compétences techniques")
-        if hard_skills_h:
-            badges = "".join([
-                f'<span style="display:inline-block; background:#1e3a5f; color:#93c5fd; '
-                f'border-radius:20px; padding:4px 12px; margin:3px; font-size:12px; '
-                f'font-weight:600;">{hs_h}</span>' for hs_h in hard_skills_h[:12]
-            ])
-            st.markdown(f'<div style="line-height:2.2;">{badges}</div>', unsafe_allow_html=True)
-        else:
-            st.caption("Non extraites.")
-    with col_transf:
-        st.markdown("#### 🌱 Compétences transférables")
-        if transferables_h:
-            for comp_h in transferables_h[:8]:
-                st.markdown(f"""
-                    <div style="background:#1e293b; border-left:3px solid #16a34a;
-                                border-radius:6px; padding:8px 12px; margin-bottom:5px;
-                                color:#86efac; font-size:12px;">✦ {comp_h}</div>
-                """, unsafe_allow_html=True)
-        else:
-            st.caption("Non extraites.")
-    st.markdown("---")
-
-    # ── Bloc 4 : Métiers cibles ───────────────────────────────────────────────
-    st.markdown("#### 🎯 Métiers cibles recommandés")
-    if metiers_cibles_h:
-        nb_metiers = len(metiers_cibles_h)
-        rangs = ["🥇", "🥈", "🥉"] + [f"#{i+1}" for i in range(3, nb_metiers)]
-        for i, metier_h in enumerate(metiers_cibles_h[:6]):
-            score_metier = max(30, score_global - (i * max(3, (score_global - 30) // max(nb_metiers, 1))))
-            couleur_m = "#16a34a" if score_metier >= 70 else "#ea580c" if score_metier >= 50 else "#6b7280"
-            st.markdown(f"""
-                <div style="background:#1e293b; border-radius:8px; padding:10px 14px;
-                            margin-bottom:6px; display:flex; align-items:center;
-                            justify-content:space-between;">
-                    <span style="color:#e2e8f0; font-size:13px; font-weight:600;">{rangs[i]} {metier_h}</span>
-                    <span style="background:{couleur_m}; color:white; border-radius:12px;
-                                 padding:3px 10px; font-size:12px; font-weight:700;
-                                 min-width:48px; text-align:center;">{score_metier}%</span>
-                </div>
-            """, unsafe_allow_html=True)
-        st.caption("Classés du plus au moins pertinent par rapport à la solidité globale du profil.")
-    else:
-        st.info("Aucun métier cible extrait.")
-    st.markdown("---")
-
-    # ── Bloc 5 : Compte-rendu narratif (repliable) ────────────────────────────
-    if avis_complet_h.strip():
-        with st.expander("📄 Compte-rendu narratif complet de l'IA"):
+        st.markdown("---")
+        # Compte-rendu narratif — affiché directement (pas replié) pour les profils matching
+        if avis_complet_h.strip():
+            st.markdown("#### 📄 Compte-rendu de l'analyse IA (CV × Offre)")
             st.markdown(f"""
                 <div style="background:#1a202c; padding:18px; border-radius:8px;
                             color:#e2e8f0; white-space:pre-wrap; line-height:1.7;
                             font-size:13px;">{avis_complet_h}</div>
             """, unsafe_allow_html=True)
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # BRANCHE B — Profil venant de l'analyse VIVIER (sans offre)
+    # ══════════════════════════════════════════════════════════════════════════
+    else:
+        traits_dominants = profil_comportemental.get("traits_dominants", [])
+        indices_parcours = profil_comportemental.get("indices_parcours_pro", "")
+        indices_centres  = profil_comportemental.get("indices_centres_interet", "")
+        coherence_projet = profil_comportemental.get("coherence_projet_pro", "")
+        style_cv         = profil_comportemental.get("style_cv", "")
+
+        hard_skills = []
+        if hard_skills_brut:
+            items = [x.strip() for x in str(hard_skills_brut).split(",") if x.strip()]
+            hard_skills = [x for x in items if "@" not in x]
+
+        indices_parcours_h = html.escape(str(indices_parcours or ""))
+        indices_centres_h  = html.escape(str(indices_centres or ""))
+        coherence_projet_h = html.escape(str(coherence_projet or ""))
+        style_cv_h         = html.escape(str(style_cv or ""))
+        traits_dominants_h = [html.escape(str(t)) for t in traits_dominants]
+        hard_skills_h      = [html.escape(str(hs)) for hs in hard_skills]
+        transferables_h    = [html.escape(str(c)) for c in transferables]
+        metiers_cibles_h   = [html.escape(str(m)) for m in metiers_cibles]
+
+        # ── Bloc 1 : Traits comportementaux ──────────────────────────────────
+        st.markdown("#### 🧠 Empreinte comportementale")
+        if traits_dominants_h:
+            nb = min(len(traits_dominants_h), 5)
+            cols = st.columns(nb)
+            couleurs = ["#2563eb", "#7c3aed", "#0891b2", "#059669", "#d97706"]
+            for i, trait_h in enumerate(traits_dominants_h[:nb]):
+                lettre = trait_h.strip()[0].upper() if trait_h.strip() else "?"
+                mot_court = trait_h.strip().split()[0][:10] if trait_h.strip() else "Trait"
+                with cols[i]:
+                    st.markdown(f"""
+                        <div style="text-align:center; background:#1e293b; border-radius:12px;
+                                    padding:14px 8px; border:2px solid {couleurs[i % len(couleurs)]};">
+                            <div style="font-size:28px; font-weight:800;
+                                        color:{couleurs[i % len(couleurs)]};">{lettre}</div>
+                            <div style="font-size:11px; color:#94a3b8;
+                                        margin-top:4px; font-weight:600;">{mot_court}</div>
+                        </div>
+                    """, unsafe_allow_html=True)
+            st.markdown("")
+            for trait_h in traits_dominants_h:
+                st.markdown(f"""
+                    <div style="background:#1e293b; border-left:3px solid #2563eb;
+                                border-radius:6px; padding:10px 14px; margin-bottom:6px;
+                                color:#cbd5e1; font-size:13px;">🔹 {trait_h}</div>
+                """, unsafe_allow_html=True)
+        else:
+            st.info("Aucun trait comportemental extrait pour ce candidat.")
+        st.markdown("---")
+
+        # ── Bloc 2 : Parcours + Centres d'intérêt ────────────────────────────
+        col_parc, col_cent = st.columns(2)
+        with col_parc:
+            st.markdown("#### 💼 Lecture du parcours professionnel")
+            if indices_parcours_h:
+                st.markdown(f"""
+                    <div style="background:#1e293b; border-radius:8px; padding:14px;
+                                color:#cbd5e1; font-size:13px; line-height:1.6;">{indices_parcours_h}</div>
+                """, unsafe_allow_html=True)
+            else:
+                st.caption("Non renseigné.")
+        with col_cent:
+            st.markdown("#### 🎯 Centres d'intérêt & engagements")
+            if indices_centres_h and indices_centres_h.strip().lower() not in ("aucun", "non mentionné", ""):
+                st.markdown(f"""
+                    <div style="background:#1e293b; border-radius:8px; padding:14px;
+                                color:#cbd5e1; font-size:13px; line-height:1.6;">{indices_centres_h}</div>
+                """, unsafe_allow_html=True)
+            else:
+                st.caption("Aucun centre d'intérêt mentionné dans le CV.")
+        if coherence_projet_h:
+            st.markdown("#### 🔗 Cohérence du projet professionnel")
+            st.markdown(f"""
+                <div style="background:#0f2027; border:1px solid #2563eb; border-radius:8px;
+                            padding:14px; color:#93c5fd; font-size:13px; line-height:1.6;">
+                    {coherence_projet_h}</div>
+            """, unsafe_allow_html=True)
+
+        if style_cv_h and "Non analysé" not in style_cv_h:
+            st.markdown("#### 🎨 Lecture du style visuel du CV")
+            st.markdown(f"""
+                <div style="background:#1a1a2e; border:1px solid #7c3aed; border-radius:8px;
+                            padding:14px; color:#c4b5fd; font-size:13px; line-height:1.6;
+                            display:flex; gap:12px; align-items:flex-start;">
+                    <span style="font-size:20px; flex-shrink:0;">🖼️</span>
+                    <span>{style_cv_h}</span>
+                </div>
+            """, unsafe_allow_html=True)
+        st.markdown("---")
+
+        # ── Bloc 3 : Compétences ──────────────────────────────────────────────
+        col_hard, col_transf = st.columns(2)
+        with col_hard:
+            st.markdown("#### 🛠️ Compétences techniques")
+            if hard_skills_h:
+                badges = "".join([
+                    f'<span style="display:inline-block; background:#1e3a5f; color:#93c5fd; '
+                    f'border-radius:20px; padding:4px 12px; margin:3px; font-size:12px; '
+                    f'font-weight:600;">{hs_h}</span>' for hs_h in hard_skills_h[:12]
+                ])
+                st.markdown(f'<div style="line-height:2.2;">{badges}</div>', unsafe_allow_html=True)
+            else:
+                st.caption("Non extraites.")
+        with col_transf:
+            st.markdown("#### 🌱 Compétences transférables")
+            if transferables_h:
+                for comp_h in transferables_h[:8]:
+                    st.markdown(f"""
+                        <div style="background:#1e293b; border-left:3px solid #16a34a;
+                                    border-radius:6px; padding:8px 12px; margin-bottom:5px;
+                                    color:#86efac; font-size:12px;">✦ {comp_h}</div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.caption("Non extraites.")
+        st.markdown("---")
+
+        # ── Bloc 4 : Métiers cibles ───────────────────────────────────────────
+        st.markdown("#### 🎯 Métiers cibles recommandés")
+        couleur_score = "#16a34a" if score_global >= 70 else "#ea580c" if score_global >= 45 else "#dc2626"
+        if metiers_cibles_h:
+            nb_metiers = len(metiers_cibles_h)
+            rangs = ["🥇", "🥈", "🥉"] + [f"#{i+1}" for i in range(3, nb_metiers)]
+            for i, metier_h in enumerate(metiers_cibles_h[:6]):
+                score_metier = max(30, score_global - (i * max(3, (score_global - 30) // max(nb_metiers, 1))))
+                couleur_m = "#16a34a" if score_metier >= 70 else "#ea580c" if score_metier >= 50 else "#6b7280"
+                st.markdown(f"""
+                    <div style="background:#1e293b; border-radius:8px; padding:10px 14px;
+                                margin-bottom:6px; display:flex; align-items:center;
+                                justify-content:space-between;">
+                        <span style="color:#e2e8f0; font-size:13px; font-weight:600;">{rangs[i]} {metier_h}</span>
+                        <span style="background:{couleur_m}; color:white; border-radius:12px;
+                                     padding:3px 10px; font-size:12px; font-weight:700;
+                                     min-width:48px; text-align:center;">{score_metier}%</span>
+                    </div>
+                """, unsafe_allow_html=True)
+            st.caption("Classés du plus au moins pertinent par rapport à la solidité globale du profil.")
+        else:
+            st.info("Aucun métier cible extrait.")
+        st.markdown("---")
+
+        # ── Bloc 5 : Compte-rendu narratif ───────────────────────────────────
+        if avis_complet_h.strip():
+            with st.expander("📄 Compte-rendu narratif complet de l'IA"):
+                st.markdown(f"""
+                    <div style="background:#1a202c; padding:18px; border-radius:8px;
+                                color:#e2e8f0; white-space:pre-wrap; line-height:1.7;
+                                font-size:13px;">{avis_complet_h}</div>
+                """, unsafe_allow_html=True)
 
 def _generer_pdf_matching(cand: dict, texte_offre: str = ""):
     """Génère le PDF du rapport Matching CV × Offre."""
