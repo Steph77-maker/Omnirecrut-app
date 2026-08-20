@@ -825,36 +825,6 @@ if _qp_token:
 if not check_password():
     st.stop()
 
-# ==============================================================================
-# --- WIDGET SUPPORT CRISP ---
-# Le widget Crisp apparaît uniquement pour les utilisateurs connectés.
-# Utilise st.components.v1.html() pour contourner le blocage JS de Streamlit.
-# Le Website ID est lu depuis les secrets Streamlit (CRISP_WEBSITE_ID).
-# ==============================================================================
-import streamlit.components.v1 as components
-
-_crisp_user_email = st.session_state.get("user_email", "")
-_crisp_website_id = st.secrets.get("CRISP_WEBSITE_ID", "")
-
-if _crisp_website_id:
-    components.html(
-        f"""
-        <script type="text/javascript">
-            window.$crisp=[];
-            window.CRISP_WEBSITE_ID="{_crisp_website_id}";
-            (function(){{
-                var d=document;
-                var s=d.createElement("script");
-                s.src="https://client.crisp.chat/l.js";
-                s.async=1;
-                d.getElementsByTagName("head")[0].appendChild(s);
-            }})();
-            window.$crisp.push(["set", "user:email", ["{_crisp_user_email}"]]);
-        </script>
-        """,
-        height=0,
-    )
-
 # --- IMPORT SECURISÉ DU MODULE PDF ---
 try:
     from reportlab.lib import colors
