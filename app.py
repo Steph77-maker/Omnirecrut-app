@@ -4,10 +4,13 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import html
 import json
+import logging
 import os
 import re
 import secrets
 import smtplib
+import tempfile
+import uuid
 import psycopg2
 import psycopg2.extras
 import time
@@ -250,7 +253,10 @@ def peut_utiliser_ia(email_utilisateur=None):
             return nb_actuel < q_max
         return False
     except Exception:
-        return True
+        # Fail-closed : en cas de panne DB, on bloque l'IA plutôt que de
+        # laisser passer un quota illimité involontaire (coût API Gemini).
+        logging.exception("peut_utiliser_ia : erreur lecture quota org %s", org_id)
+        return False
 
 def incrémenter_quota_ia(email_utilisateur=None):
     """Incremente le compteur de requetes IA de l'ORGANISATION courante.
@@ -306,7 +312,9 @@ def creer_pdf_annonce(titre, contenu):
     pdf.ln(10)
     pdf.set_font("Helvetica", size=11)
     pdf.multi_cell(0, 10, txt=contenu)
-    chemin = f"Annonce_{titre[:15].replace(' ', '_')}.pdf"
+    # Fichier temporaire unique par requête — évite les collisions entre utilisateurs simultanés
+    fd, chemin = tempfile.mkstemp(suffix=".pdf", prefix=f"annonce_{uuid.uuid4().hex}_")
+    os.close(fd)
     pdf.output(chemin)
     return chemin
 
@@ -323,7 +331,9 @@ def creer_pdf_candidat(nom, poste, date_rdv, details):
     pdf.ln(5)
     pdf.set_font("Helvetica", size=11)
     pdf.multi_cell(0, 10, txt=details)
-    chemin = f"Fiche_{nom.replace(' ', '_')}.pdf"
+    # Fichier temporaire unique par requête — évite les collisions entre utilisateurs simultanés
+    fd, chemin = tempfile.mkstemp(suffix=".pdf", prefix=f"fiche_{uuid.uuid4().hex}_")
+    os.close(fd)
     pdf.output(chemin)
     return chemin
 
@@ -360,7 +370,7 @@ def envoyer_email_candidat(to_email, sujet, corps_message, email_user, pwd_user)
         elif "yahoo" in email_user:
             smtp_server = "smtp.mail.yahoo.com"
 
-        server = smtplib.SMTP(smtp_server, smtp_port)
+        server = smtplib.SMTP(smtp_server, smtp_port, timeout=15)
         server.starttls()
         server.login(email_user, pwd_user)
         msg = MIMEMultipart()
@@ -372,7 +382,8 @@ def envoyer_email_candidat(to_email, sujet, corps_message, email_user, pwd_user)
         server.quit()
         return True
     except Exception as e:
-        st.error(f"Erreur technique SMTP lors de l'envoi : {e}")
+        logging.exception("Erreur SMTP lors de l'envoi vers %s", to_email)
+        st.error("L'envoi de l'e-mail a échoué. Vérifiez votre configuration de messagerie dans la barre latérale.")
         return False
 
 
@@ -542,8 +553,17 @@ def check_password():
                 "de continuer."
             )
             st.stop()
-    except Exception as e:
-        st.error(f"Erreur d'initialisation du système d'authentification : {e}")
+    except Exception:
+        logging.exception("Erreur d'initialisation du système d'authentification")
+        st.error("⚠️ Erreur d'initialisation. Contactez l'administrateur.")
+
+    # --- Protection anti-brute-force ---
+    # Compteur de tentatives échouées par session. Après 5 échecs consécutifs,
+    # on applique un délai exponentiel croissant (max 30 s) avant d'afficher le formulaire.
+    _fails = st.session_state.get("_login_fails", 0)
+    if _fails >= 5:
+        _delai = min(2 ** (_fails - 4), 30)
+        time.sleep(_delai)
 
  # Style CSS écran de connexion
     st.markdown(
@@ -608,6 +628,8 @@ def check_password():
                                 db_org_fin_essai,
                             ) = res
                             if verifier_mdp(pwd_saisi, db_password):
+                                # Connexion réussie : on réinitialise le compteur d'échecs
+                                st.session_state["_login_fails"] = 0
                                 # Migration silencieuse : si l'ancien mot de passe était
                                 # stocké en clair, on le remplace par un hash bcrypt.
                                 if not mdp_est_hashe(db_password):
@@ -662,11 +684,14 @@ def check_password():
                                         " renouveler votre accès."
                                     )
                             else:
+                                st.session_state["_login_fails"] = st.session_state.get("_login_fails", 0) + 1
                                 st.error("Mot de passe incorrect.")
                         else:
+                            st.session_state["_login_fails"] = st.session_state.get("_login_fails", 0) + 1
                             st.error("Aucun compte associé à cet e-mail.")
-                    except Exception as err:
-                        st.error(f"Erreur technique de connexion : {err}")
+                    except Exception:
+                        logging.exception("Erreur technique lors de la connexion de %s", email_saisi)
+                        st.error("Une erreur technique est survenue. Réessayez dans quelques instants.")
 
         return False
     return True
@@ -729,12 +754,19 @@ if _qp_token:
 
         if btn_activer:
             nouvel_email = nouvel_email.strip().lower()
+            _EMAIL_RE = re.compile(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$')
             if not nouvel_email or not nouveau_mdp_a or not nouveau_mdp_b:
                 st.error("Merci de remplir tous les champs.")
+            elif not _EMAIL_RE.match(nouvel_email):
+                st.error("L'adresse e-mail semble invalide. Vérifiez le format (exemple@domaine.fr).")
             elif nouveau_mdp_a != nouveau_mdp_b:
                 st.error("Les deux mots de passe ne correspondent pas.")
             elif len(nouveau_mdp_a) < 8:
                 st.error("Le mot de passe doit faire au moins 8 caractères.")
+            elif not any(c.isupper() for c in nouveau_mdp_a):
+                st.error("Le mot de passe doit contenir au moins une lettre majuscule.")
+            elif not any(c.isdigit() for c in nouveau_mdp_a):
+                st.error("Le mot de passe doit contenir au moins un chiffre.")
             else:
                 try:
                     # Vérifier si l'e-mail est déjà pris
@@ -769,8 +801,9 @@ if _qp_token:
                         st.markdown(f"**Identifiant :** {nouvel_email}")
                         st.info("Fermez cette page et connectez-vous sur l'application avec vos nouveaux identifiants.")
                         st.query_params.clear()
-                except Exception as e_tok:
-                    st.error(f"Erreur lors de l'activation : {e_tok}")
+                except Exception:
+                    logging.exception("Erreur lors de l'activation du compte prospect")
+                    st.error("Une erreur est survenue lors de l'activation. Contactez l'administrateur.")
     st.stop()
 
 # --- DÉMARRAGE DE L'APPLICATION ---
@@ -1980,6 +2013,12 @@ with st.sidebar:
         )
         
     st.markdown("---")
+    # --- Bouton de déconnexion ---
+    if st.button("🚪 Se déconnecter", use_container_width=True):
+        # Effacer toutes les clés de session pour invalider complètement la session
+        for _k in list(st.session_state.keys()):
+            del st.session_state[_k]
+        st.rerun()
 
 # --- TABLES RH & ADMINISTRATIVES ---
 @st.cache_resource(show_spinner=False)
@@ -4792,7 +4831,8 @@ elif st.session_state['page_active'] == "🤝 MATCHING & OPPORTUNITÉS":
                             st.error(f"Erreur IA : {e_inv}")
 
                 if "resultat_matching_inverse" in st.session_state:
-                    st.markdown(f'<div style="background-color: #1e1e24; padding:20px; border-radius:8px; color:white; white-space:pre-wrap;">{st.session_state["resultat_matching_inverse"]}</div>', unsafe_allow_html=True)
+                    _res_inv_safe = html.escape(str(st.session_state["resultat_matching_inverse"]))
+                    st.markdown(f'<div style="background-color: #1e1e24; padding:20px; border-radius:8px; color:white; white-space:pre-wrap;">{_res_inv_safe}</div>', unsafe_allow_html=True)
 
 # --- 🖥️ ONGLET : TRI & CLASSEMENT IA ---
 elif st.session_state['page_active'] == "🖥️ TRI & CLASSEMENT IA":
@@ -5005,7 +5045,8 @@ elif st.session_state['page_active'] == "🤝 MATCHING & OPPORTUNITÉS":
                             st.error(f"Erreur IA : {e_inv}")
 
                 if "resultat_matching_inverse" in st.session_state:
-                    st.markdown(f'<div style="background-color: #1e1e24; padding:20px; border-radius:8px; color:white; white-space:pre-wrap;">{st.session_state["resultat_matching_inverse"]}</div>', unsafe_allow_html=True)
+                    _res_inv_safe2 = html.escape(str(st.session_state["resultat_matching_inverse"]))
+                    st.markdown(f'<div style="background-color: #1e1e24; padding:20px; border-radius:8px; color:white; white-space:pre-wrap;">{_res_inv_safe2}</div>', unsafe_allow_html=True)
                     
  # --- 📊 ONGLET : PIPELINE DE RECRUTEMENT ---
 elif st.session_state['page_active'] == "📊 PIPELINE DE RECRUTEMENT":
@@ -5097,7 +5138,7 @@ elif st.session_state['page_active'] == "📊 PIPELINE DE RECRUTEMENT":
     for i, statut in enumerate(statuts_kanban):
         with cols_streamlit[i]:
             nb_candidats = len(colonnes_data[statut])
-            st.markdown(f'<div class="kanban-header">📌 {statut} ({nb_candidats})</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="kanban-header">📌 {html.escape(str(statut))} ({nb_candidats})</div>', unsafe_allow_html=True)
             
             if nb_candidats == 0:
                 st.caption("Aucun profil à ce stade.")
