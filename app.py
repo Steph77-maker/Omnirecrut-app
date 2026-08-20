@@ -5318,32 +5318,63 @@ elif st.session_state['page_active'] == "📋 GESTION ADMINISTRATIVE & RH":
                         # fermée ci-dessus (jamais de génération libre d'un numéro IDCC).
                         try:
                             model_ccn = genai.GenerativeModel("gemini-2.5-flash")
-                            options_texte = "\n".join(f"- {opt}" for opt in CCN_LISTE_VERIFIEE)
-                            prompt_ccn = f"""Tu es un expert en droit du travail français spécialisé dans les conventions collectives.
+                            options_numerotees = "\n".join(
+                                f"{i+1}. {opt}" for i, opt in enumerate(CCN_LISTE_VERIFIEE)
+                            )
+                            prompt_ccn = f"""Tu es un expert en droit du travail français spécialisé dans les conventions collectives nationales (CCN).
 
-Voici une liste FERMÉE de conventions collectives nationales françaises (recopie EXACTEMENT le texte) :
-{options_texte}
+Voici une liste FERMÉE et numérotée de CCN françaises :
+{options_numerotees}
 
-CONTEXTE DU CONTRAT :
-- Poste : "{saisie_poste}"
-- Secteur d'activité déclaré par l'employeur : "{secteur_ccn_contrat}"
-- Nom de l'entreprise : "{nom_employeur}"
+CONTEXTE DU CONTRAT À ANALYSER :
+- Intitulé du poste : "{saisie_poste}"
+- Secteur d\'activité déclaré par l\'employeur : "{secteur_ccn_contrat}"
+- Nom de l\'entreprise : "{nom_employeur}"
 
-RÈGLES STRICTES :
-1. Le secteur déclaré EST la donnée la plus fiable — pars de lui en premier.
-2. Recopie EXACTEMENT, caractère pour caractère, la ligne qui correspond.
-3. Attention aux confusions fréquentes :
-   - "Restauration collective" (cantines, self d'entreprise) → IDCC 1266, PAS HCR
-   - "HCR" = uniquement hôtels, cafés, restaurants commerciaux ouverts au public
-   - "Aide à domicile / SAAD" → IDCC 2941 BAD, PAS services à la personne IDCC 3127
-4. Si AUCUNE ligne ne correspond avec certitude, réponds uniquement : AUCUNE
-5. N'invente JAMAIS un nom ou numéro absent de la liste."""
+MÉTHODE D\'ANALYSE (dans cet ordre de priorité) :
+1. Analyse d\'abord le SECTEUR D\'ACTIVITÉ — c\'est la donnée la plus fiable.
+2. Si le secteur ne suffit pas, analyse l\'INTITULÉ DU POSTE.
+3. Si le nom de l\'entreprise donne un indice supplémentaire, utilise-le.
+
+RÈGLES DE RÉPONSE STRICTES :
+- Réponds UNIQUEMENT avec le numéro de la ligne correspondante suivi d\'un espace et du texte EXACT de cette ligne tel qu\'il apparaît dans la liste ci-dessus.
+- Format attendu : <numéro>. <texte exact de la ligne>
+- Si AUCUNE ligne ne correspond avec certitude : réponds exactement "AUCUNE"
+- N\'invente JAMAIS un nom, sigle ou numéro IDCC absent de la liste.
+
+CONFUSIONS À ÉVITER :
+- "Restauration collective" (cantines, self d\'entreprise) → ligne 2 (IDCC 1266), PAS la ligne 1 HCR
+- "HCR" = UNIQUEMENT hôtels, cafés, restaurants commerciaux ouverts au public → ligne 1
+- "Aide à domicile / SAAD / SSIAD" → ligne 23 (IDCC 2941 BAD), PAS ligne 22 (IDCC 3127)
+- "Bâtiment ≤10 salariés" → ligne 31, ">10 salariés" → ligne 32
+- "Métallurgie" couvre aussi la mécanique, chaudronnerie, électronique industrielle → ligne 36
+
+Quelle est la CCN applicable ?"""
                             resp_ccn = model_ccn.generate_content(prompt_ccn)
                             reponse_ia = resp_ccn.text.strip()
-                            # Validation stricte : la réponse doit correspondre mot pour mot à
-                            # une option de la liste fermée — sinon impossible d'halluciner.
+                            # Validation : correspondance directe d'abord,
+                            # puis extraction du texte après "N. " si besoin,
+                            # enfin recherche par numéro IDCC en dernier recours.
+                            ccn_trouvee = None
                             if reponse_ia in CCN_LISTE_VERIFIEE:
-                                ccn_ia = reponse_ia
+                                ccn_trouvee = reponse_ia
+                            elif reponse_ia != "AUCUNE":
+                                import re as _re
+                                _match = _re.match(r"^\d+\.\s+(.+)$", reponse_ia, _re.DOTALL)
+                                if _match:
+                                    _extrait = _match.group(1).strip()
+                                    if _extrait in CCN_LISTE_VERIFIEE:
+                                        ccn_trouvee = _extrait
+                                    else:
+                                        _idcc = _re.search(r"IDCC\s*(\d+)", reponse_ia)
+                                        if _idcc:
+                                            _num = _idcc.group(1)
+                                            for opt in CCN_LISTE_VERIFIEE:
+                                                if f"IDCC {_num}" in opt or f"IDCC{_num}" in opt:
+                                                    ccn_trouvee = opt
+                                                    break
+                            if ccn_trouvee:
+                                ccn_ia = ccn_trouvee
                                 ccn_source = "choix IA parmi la liste vérifiée"
                             else:
                                 ccn_ia = CCN_NON_DETERMINEE
