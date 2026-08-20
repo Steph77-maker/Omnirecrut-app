@@ -2136,6 +2136,7 @@ if st.session_state.get("is_admin", False):
                             conn_add.close()
                         _charger_prospects_quotas.clear()
                         _charger_prospects_liste.clear()
+                        _charger_organisations_admin.clear()
                         st.success(
                             f"Accès créé pour {p_email} jusqu'au"
                             f" {datetime.date.fromisoformat(date_fin_calc).strftime('%d/%m/%Y')} ! "
@@ -3661,15 +3662,24 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
                                     except Exception as e: st.error(f"Erreur Gemini : {e}")
                             
                             if "mail_genere_texte" in st.session_state:
-                                st.markdown("🔹 **Aperçu du message rédigé par l'IA :**")
-                                st.markdown(f'<div style="background-color: #262730; padding: 20px; border-radius: 10px; color: white; white-space: pre-wrap;">{st.session_state["mail_genere_texte"]}</div>', unsafe_allow_html=True)
-                                
-                                mailto_url = f"mailto:{email_candidat}?subject={urllib.parse.quote(st.session_state['mail_genere_sujet'])}&body={urllib.parse.quote(st.session_state['mail_genere_texte'])}"
+                                st.markdown("🔹 **Message rédigé par l'IA — modifiable avant envoi :**")
+                                texte_edite = st.text_area(
+                                    "Contenu du mail :",
+                                    value=st.session_state["mail_genere_texte"],
+                                    height=300,
+                                    key="mail_genere_texte_edite",
+                                    label_visibility="collapsed",
+                                )
+                                st.session_state["mail_genere_texte"] = texte_edite
+
+                                mailto_url = f"mailto:{email_candidat}?subject={urllib.parse.quote(st.session_state['mail_genere_sujet'])}&body={urllib.parse.quote(texte_edite)}"
                                 col_action1, col_action2 = st.columns([3, 1])
                                 with col_action1: st.link_button("✉️ Ouvrir Gmail & Envoyer", url=mailto_url, use_container_width=True, type="primary")
                                 with col_action2:
                                     if st.button("🗑️ Effacer", use_container_width=True):
                                         del st.session_state["mail_genere_texte"]
+                                        if "mail_genere_texte_edite" in st.session_state:
+                                            del st.session_state["mail_genere_texte_edite"]
                                         st.rerun()
             else:
                 st.info("Le vivier est actuellement vide.")
