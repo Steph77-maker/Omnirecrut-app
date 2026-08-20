@@ -726,7 +726,10 @@ if _qp_token:
     #   ALTER TABLE organisations ADD COLUMN IF NOT EXISTS token_creation_compte TEXT;
     try:
         c_tok.execute(
-            "SELECT id, nom, email_contact FROM organisations WHERE token_creation_compte = %s AND est_organisation_admin = FALSE",
+            """SELECT id, nom, email_contact FROM organisations
+               WHERE token_creation_compte = %s
+                 AND est_organisation_admin = FALSE
+                 AND (token_expiration IS NULL OR token_expiration > NOW())""",
             (_qp_token,)
         )
         org_tok = c_tok.fetchone()
@@ -737,7 +740,19 @@ if _qp_token:
         org_tok = None
 
     if not org_tok:
-        st.error("⛔ Ce lien d'activation est invalide ou a déjà été utilisé.")
+        # On vérifie si le token existe mais a expiré, pour donner un message plus précis
+        try:
+            c_tok.execute(
+                "SELECT token_expiration FROM organisations WHERE token_creation_compte = %s AND est_organisation_admin = FALSE",
+                (_qp_token,)
+            )
+            _row_exp = c_tok.fetchone()
+            if _row_exp and _row_exp[0] and _row_exp[0] < datetime.datetime.now(datetime.timezone.utc):
+                st.error("⏳ Ce lien d'activation a expiré (validité 72h). Contactez votre administrateur pour en obtenir un nouveau.")
+            else:
+                st.error("⛔ Ce lien d'activation est invalide ou a déjà été utilisé.")
+        except Exception:
+            st.error("⛔ Ce lien d'activation est invalide ou a déjà été utilisé.")
         st.info("Contactez votre administrateur OmniRecrut IA pour obtenir un nouveau lien.")
         st.stop()
 
@@ -6285,8 +6300,9 @@ if st.session_state.get("page_active") == "🔐 ABONNEMENTS & CLIENTS":
                             conn_tok_gen = _ouvrir_connexion_pg()
                             try:
                                 c_tok_gen = conn_tok_gen.cursor()
+                                # Le token expire automatiquement 72h après sa génération
                                 c_tok_gen.execute(
-                                    "UPDATE organisations SET token_creation_compte = %s WHERE id = %s",
+                                    "UPDATE organisations SET token_creation_compte = %s, token_expiration = NOW() + INTERVAL '72 hours' WHERE id = %s",
                                     (_token_new, o_id)
                                 )
                                 conn_tok_gen.commit()
@@ -6294,14 +6310,15 @@ if st.session_state.get("page_active") == "🔐 ABONNEMENTS & CLIENTS":
                                 conn_tok_gen.close()
                             st.session_state[f"lien_activation_{o_id}"] = _token_new
                         except Exception as e_tg:
-                            st.error(f"Erreur : {e_tg}")
+                            logging.exception("Erreur génération token activation org %s", o_id)
+                            st.error("Erreur lors de la génération du lien. Réessayez.")
 
                     if st.session_state.get(f"lien_activation_{o_id}"):
                         _tok_affiche = st.session_state[f"lien_activation_{o_id}"]
                         _base_url = st.secrets.get("APP_BASE_URL", "https://votre-app.streamlit.app")
                         _lien_complet = f"{_base_url}?setup_token={_tok_affiche}"
                         st.info(f"📋 Lien à envoyer au prospect :\n\n`{_lien_complet}`")
-                        st.caption("⚠️ Ce lien est à usage unique. Une fois le compte créé, il ne fonctionnera plus.")
+                        st.caption("⚠️ Ce lien est à usage unique et expire dans 72h. Une fois le compte créé, il ne fonctionnera plus.")
                 else:
                     st.caption("⚠️ Le statut doit être ACTIF ou PRO pour générer un lien d'activation.")
 
