@@ -5245,6 +5245,10 @@ elif st.session_state['page_active'] == "📋 GESTION ADMINISTRATIVE & RH":
                     # Restauration collective
                     "agent de restauration": CCN_LISTE_VERIFIEE[1],
                     "cuisinier collectif": CCN_LISTE_VERIFIEE[1],
+                    "cuisinier de collectivité": CCN_LISTE_VERIFIEE[1],
+                    "collectivité": CCN_LISTE_VERIFIEE[1],
+                    "agent de cantine": CCN_LISTE_VERIFIEE[1],
+                    "cuisine collective": CCN_LISTE_VERIFIEE[1],
                     # Transport
                     "chauffeur": CCN_LISTE_VERIFIEE[4],
                     "conducteur": CCN_LISTE_VERIFIEE[4],
@@ -5292,16 +5296,50 @@ elif st.session_state['page_active'] == "📋 GESTION ADMINISTRATIVE & RH":
                     "tourneur fraiseur": CCN_LISTE_VERIFIEE[35],
                 }
 
+                # Secteurs génériques du selectbox qui nécessitent un croisement
+                # avec le poste avant de décider (trop larges pour trancher seuls).
+                _SECTEURS_AMBIGUS = {
+                    "restauration / hôtellerie",
+                    "transport / logistique",
+                    "bâtiment / tp",
+                    "industrie / technique",
+                    "tertiaire / bureau / pme",
+                }
+
                 def _ccn_par_mots_cles(poste_txt, secteur_txt=""):
                     """Cherche d'abord dans le secteur (priorité haute),
-                    puis dans le poste si rien n'est trouvé."""
+                    puis dans le poste.
+                    Exception : si le secteur est une valeur générique du selectbox
+                    (ex. 'Restauration / Hôtellerie'), on analyse le poste EN PREMIER
+                    pour éviter les faux matchs (ex. 'restaurant' → HCR alors que
+                    le poste est 'Cuisinier de collectivité' → IDCC 1266)."""
                     secteur_lower = secteur_txt.lower().strip()
                     poste_lower = poste_txt.lower().strip()
-                    # Priorité 1 : secteur déclaré par l'utilisateur
+
+                    # Cas secteur ambigu : le poste est plus précis que le secteur générique.
+                    if secteur_lower in _SECTEURS_AMBIGUS:
+                        # Poste d'abord
+                        for mot_cle, ccn_val in _ccn_par_mot_cle_poste.items():
+                            if mot_cle in poste_lower:
+                                return ccn_val
+                        # Puis secteur (mots-clés PRÉCIS uniquement, pas les génériques)
+                        _mots_cles_precis = {
+                            k: v for k, v in _ccn_par_secteur.items()
+                            if k not in ("restaurant", "hôtellerie", "industrie",
+                                         "transport", "logistique", "bâtiment",
+                                         "construction")
+                        }
+                        for mot_cle, ccn_val in _mots_cles_precis.items():
+                            if mot_cle in secteur_lower:
+                                return ccn_val
+                        return None
+
+                    # Cas secteur précis (texte libre saisi par l'utilisateur) :
+                    # le secteur est prioritaire.
                     for mot_cle, ccn_val in _ccn_par_secteur.items():
                         if mot_cle in secteur_lower:
                             return ccn_val
-                    # Priorité 2 : intitulé du poste
+                    # Puis le poste
                     for mot_cle, ccn_val in _ccn_par_mot_cle_poste.items():
                         if mot_cle in poste_lower:
                             return ccn_val
