@@ -886,7 +886,6 @@ def _save_candidate_to_sqlite(**kwargs) -> dict:
     indices_centres_interet  = kwargs.get("indices_centres_interet", "")
     coherence_projet_pro     = kwargs.get("coherence_projet_pro", "")
     metiers_cibles           = kwargs.get("metiers_cibles", [])
-    pourcentage_adequation   = kwargs.get("pourcentage_adequation", 0)
     compte_rendu             = kwargs.get("compte_rendu", "")
     secteur_metier           = kwargs.get("secteur_metier", "Non spécifié")
     cv_texte                 = kwargs.get("cv_texte", "")
@@ -896,6 +895,10 @@ def _save_candidate_to_sqlite(**kwargs) -> dict:
     # confirmé) qui fait foi pour la colonne secteur_metier de la table.
     secteur_detecte          = kwargs.get("secteur_detecte", "")
     style_cv                 = kwargs.get("style_cv", "Non analysé — CV fourni en texte uniquement.")
+    # Score calculé côté Python sur la grille fixe — jamais par Gemini
+    _score_grille            = _calculer_score_grille(kwargs)
+    score_total_calcule      = _score_grille["score_total"]
+    score_blocs_json         = json.dumps(_score_grille["blocs"], ensure_ascii=False)
     """Tool exécuté par l'agent : enregistre le profil enrichi dans la table candidats existante.
     NB : la colonne 'profil_riasec' est conservée pour compatibilité base de données, mais stocke
     désormais un profil comportemental basé sur le parcours et les centres d'intérêt (pas un test
@@ -915,6 +918,8 @@ def _save_candidate_to_sqlite(**kwargs) -> dict:
         "indices_centres_interet": indices_centres_interet,
         "coherence_projet_pro": coherence_projet_pro,
         "style_cv": style_cv,
+        # Blocs de la grille stockés dans le profil pour affichage dans le rapport
+        "score_grille_blocs": _score_grille["blocs"],
     }
 
     c.execute(
@@ -930,7 +935,7 @@ def _save_candidate_to_sqlite(**kwargs) -> dict:
             "Nouveau",
             (traits_dominants[0] if traits_dominants else "À Classer"),
             compte_rendu,
-            f"{pourcentage_adequation} %",
+            f"{score_total_calcule}",
             secteur_metier,
             cv_texte,
             json.dumps(soft_skills_transferables, ensure_ascii=False),
@@ -1037,7 +1042,10 @@ def _get_tool_save_candidate():
                         type=genai.protos.Type.ARRAY,
                         items=genai.protos.Schema(type=genai.protos.Type.STRING),
                     ),
-                    "pourcentage_adequation": genai.protos.Schema(type=genai.protos.Type.INTEGER),
+                    "score_parcours": genai.protos.Schema(type=genai.protos.Type.INTEGER),
+                    "score_competences": genai.protos.Schema(type=genai.protos.Type.INTEGER),
+                    "score_projet_pro": genai.protos.Schema(type=genai.protos.Type.INTEGER),
+                    "score_centres_interet": genai.protos.Schema(type=genai.protos.Type.INTEGER),
                     "compte_rendu": genai.protos.Schema(type=genai.protos.Type.STRING),
                     "secteur_detecte": genai.protos.Schema(
                         type=genai.protos.Type.STRING,
@@ -1052,8 +1060,9 @@ def _get_tool_save_candidate():
                 required=[
                     "nom_complet", "diplomes", "hard_skills", "soft_skills_transferables",
                     "traits_dominants", "indices_parcours_pro", "indices_centres_interet",
-                    "coherence_projet_pro", "metiers_cibles", "pourcentage_adequation", "compte_rendu",
-                    "secteur_detecte",
+                    "coherence_projet_pro", "metiers_cibles", "score_parcours",
+                    "score_competences", "score_projet_pro", "score_centres_interet",
+                    "compte_rendu", "secteur_detecte",
                 ],
             ),
         )
@@ -1147,8 +1156,34 @@ Si aucune image n'est fournie, mets "Non analysé — CV fourni en texte uniquem
 
 ━━━ COUCHE 3 — PROJECTION ━━━
 metiers_cibles : 4 à 6 métiers concrets classés par pertinence (nourris par l'analyse comportementale et le style visuel).
-pourcentage_adequation : score 0-100 pondéré :
-parcours (35%) + compétences transférables (30%) + projet pro (20%) + centres d'intérêt (15%)
+
+score_parcours : évalue le parcours professionnel sur une échelle de 0 à 3 :
+  0 = parcours très lacunaire, incohérent ou inexistant
+  1 = parcours court ou peu lisible, transitions non expliquées
+  2 = parcours solide avec une logique identifiable
+  3 = parcours riche, cohérent, progressif et bien documenté
+Cite OBLIGATOIREMENT la phrase ou l'élément exact du CV qui justifie cette note dans score_justification_parcours.
+
+score_competences : évalue les compétences transférables sur une échelle de 0 à 3 :
+  0 = aucune compétence transférable identifiable
+  1 = quelques compétences mais faiblement documentées
+  2 = compétences transférables réelles, bien ancrées dans le parcours
+  3 = compétences transférables solides, multiples, clairement sourcées dans le CV
+Cite OBLIGATOIREMENT la phrase ou l'élément exact du CV qui justifie cette note dans score_justification_competences.
+
+score_projet_pro : évalue la cohérence et la maturité du projet professionnel sur une échelle de 0 à 2 :
+  0 = projet absent, flou ou incohérent avec le parcours
+  1 = projet identifiable mais encore peu affirmé
+  2 = projet professionnel clair, cohérent et ancré dans le parcours
+Cite OBLIGATOIREMENT la phrase ou l'élément exact du CV qui justifie cette note dans score_justification_projet_pro.
+
+score_centres_interet : évalue la richesse des centres d'intérêt et engagements sur une échelle de 0 à 2 :
+  0 = aucun centre d'intérêt mentionné dans le CV
+  1 = centres d'intérêt présents mais peu révélateurs ou génériques
+  2 = centres d'intérêt riches, engagements bénévoles, sports, loisirs révélateurs de traits de personnalité
+Cite OBLIGATOIREMENT la phrase ou l'élément exact du CV qui justifie cette note dans score_justification_centres_interet.
+
+IMPORTANT : ne calcule JAMAIS toi-même le score final. Tu fournis uniquement les 4 sous-scores et leurs justifications. Le calcul total est effectué par le système.
 
 ━━━ COMPTE-RENDU (compte_rendu) ━━━
 3 paragraphes maximum : portrait + compétences · empreinte comportementale · projet et métiers cibles.
@@ -1171,12 +1206,63 @@ Retourne UNIQUEMENT un objet JSON valide avec exactement ces clés (sans markdow
   "indices_centres_interet": "string",
   "coherence_projet_pro": "string",
   "metiers_cibles": ["string"],
-  "pourcentage_adequation": 0,
+  "score_parcours": 0,
+  "score_justification_parcours": "string",
+  "score_competences": 0,
+  "score_justification_competences": "string",
+  "score_projet_pro": 0,
+  "score_justification_projet_pro": "string",
+  "score_centres_interet": 0,
+  "score_justification_centres_interet": "string",
   "compte_rendu": "string",
   "secteur_detecte": "string",
   "style_cv": "string"
 }
 """
+
+# ==============================================================================
+# GRILLE D'ÉVALUATION OMNIРЕCRUT IA — CALCUL CÔTÉ PYTHON
+# Le score final n'est JAMAIS produit par Gemini.
+# Gemini fournit uniquement des sous-scores discrets + citations du CV.
+# Ce code calcule le total selon le barème fixe ci-dessous, identique
+# pour tous les candidats, auditables et explicables à tout moment.
+# Barème :
+#   Parcours professionnel      : 0-3 → max 35 pts  (×11.667)
+#   Compétences transférables   : 0-3 → max 30 pts  (×10)
+#   Cohérence du projet pro     : 0-2 → max 20 pts  (×10)
+#   Centres d'intérêt           : 0-2 → max 15 pts  (×7.5)
+#   Total                       :       max 100 pts
+# ==============================================================================
+GRILLE_BAREME = {
+    "parcours":     {"max_note": 3, "max_pts": 35, "label": "Parcours professionnel"},
+    "competences":  {"max_note": 3, "max_pts": 30, "label": "Compétences transférables"},
+    "projet_pro":   {"max_note": 2, "max_pts": 20, "label": "Cohérence du projet pro"},
+    "centres":      {"max_note": 2, "max_pts": 15, "label": "Centres d'intérêt & engagements"},
+}
+
+def _calculer_score_grille(donnees: dict) -> dict:
+    """Calcule le score /100 à partir des sous-scores Gemini selon le barème fixe.
+    Retourne un dict avec le score total et le détail par bloc."""
+    blocs = {}
+    total = 0
+
+    for cle, cfg in GRILLE_BAREME.items():
+        note_brute = int(donnees.get(f"score_{cle}", 0) or 0)
+        note_brute = max(0, min(note_brute, cfg["max_note"]))  # sécurité bornes
+        pts = round((note_brute / cfg["max_note"]) * cfg["max_pts"], 1)
+        justif = str(donnees.get(f"score_justification_{cle}", "") or "").strip()
+        blocs[cle] = {
+            "label":      cfg["label"],
+            "note":       note_brute,
+            "note_max":   cfg["max_note"],
+            "pts":        pts,
+            "pts_max":    cfg["max_pts"],
+            "justif":     justif,
+        }
+        total += pts
+
+    return {"score_total": round(total), "blocs": blocs}
+
 
 # Modèle léger sans function calling — JSON pur, enregistrement côté Python
 @st.cache_resource(show_spinner=False)
@@ -1774,7 +1860,8 @@ def analyser_cv_preview(texte_cv: str):
 Renvoie UNIQUEMENT un objet JSON valide (aucun texte autour, aucun appel de fonction) avec
 exactement les clés : nom_complet, diplomes, hard_skills, soft_skills_transferables,
 traits_dominants, indices_parcours_pro, indices_centres_interet, coherence_projet_pro,
-metiers_cibles, pourcentage_adequation, compte_rendu.
+metiers_cibles, score_parcours, score_competences, score_projet_pro, score_centres_interet,
+compte_rendu.
 
 CV à analyser :
 {texte_cv}"""
@@ -2248,7 +2335,7 @@ st.session_state['page_active'] = menu
 def generer_pdf_candidat(nom, poste, score_global, traits_dominants,
                           indices_parcours, indices_centres, coherence_projet,
                           hard_skills, transferables, metiers_cibles, avis_complet,
-                          style_cv=""):
+                          style_cv="", score_grille_blocs=None):
     """Génère un PDF professionnel du dossier candidat OmniRecrut IA."""
     from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors
@@ -2303,7 +2390,7 @@ def generer_pdf_candidat(nom, poste, score_global, traits_dominants,
     entete = Table([[
         Paragraph(f"<b>{nom}</b>", ParagraphStyle('N', fontSize=18, textColor=BLANC,
                   fontName='Helvetica-Bold', leading=22)),
-        Paragraph(f"<b>{score_global}%</b>", ParagraphStyle('S', fontSize=20, textColor=BLANC,
+        Paragraph(f"<b>{score_global}/100</b>", ParagraphStyle('S', fontSize=20, textColor=BLANC,
                   fontName='Helvetica-Bold', alignment=TA_RIGHT))
     ]], colWidths=[13*cm, 4*cm])
     entete.setStyle(TableStyle([
@@ -2318,7 +2405,7 @@ def generer_pdf_candidat(nom, poste, score_global, traits_dominants,
     sous_titre = Table([[
         Paragraph(poste, ParagraphStyle('P', fontSize=11, textColor=BLCL,
                   fontName='Helvetica', leading=14)),
-        Paragraph("Score d'employabilité estimé", ParagraphStyle('SS', fontSize=8,
+        Paragraph("Score OmniRecrut IA — grille fixe", ParagraphStyle('SS', fontSize=8,
                   textColor=colors.HexColor("#93c5fd"), fontName='Helvetica-Oblique',
                   alignment=TA_RIGHT))
     ]], colWidths=[13*cm, 4*cm])
@@ -2448,19 +2535,14 @@ def generer_pdf_candidat(nom, poste, score_global, traits_dominants,
     if metiers_cibles:
         rangs = ["🥇", "🥈", "🥉"] + [f"#{i+1}" for i in range(3, len(metiers_cibles))]
         for i, metier in enumerate(metiers_cibles[:6]):
-            score_m = max(30, score_global - (i * max(3, (score_global - 30) // max(len(metiers_cibles), 1))))
-            c_m = VERT if score_m >= 70 else ORANGE if score_m >= 50 else colors.HexColor("#6b7280")
             row = Table([[
                 Paragraph(f"{rangs[i]}  {metier}", corps_b),
-                Paragraph(f"<b>{score_m}%</b>", ParagraphStyle('Sc', fontSize=9,
-                          textColor=BLANC, fontName='Helvetica-Bold', alignment=TA_CENTER))
-            ]], colWidths=[14*cm, 3*cm])
+            ]], colWidths=[17*cm])
             row.setStyle(TableStyle([
-                ('BACKGROUND', (1,0), (1,0), c_m),
+                ('BACKGROUND', (0,0), (-1,-1), GRIS if i % 2 == 0 else BLANC),
                 ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
                 ('TOPPADDING', (0,0), (-1,-1), 5), ('BOTTOMPADDING', (0,0), (-1,-1), 5),
                 ('LEFTPADDING', (0,0), (-1,-1), 6),
-                ('ROWBACKGROUNDS', (0,0), (0,0), [GRIS if i % 2 == 0 else BLANC]),
             ]))
             story.append(row)
     else:
@@ -2475,6 +2557,111 @@ def generer_pdf_candidat(nom, poste, score_global, traits_dominants,
         story.append(Paragraph(avis_propre,
             ParagraphStyle('Avis', fontSize=8.5, textColor=GTXT, fontName='Helvetica',
                            leading=13, spaceAfter=4)))
+
+    # ── Annexe : Grille d'évaluation OmniRecrut IA ───────────────────────────
+    if score_grille_blocs:
+        from reportlab.platypus import PageBreak
+        story.append(PageBreak())
+        story.append(bloc_header("📊  Annexe — Grille d'évaluation OmniRecrut IA"))
+        story.append(Spacer(1, 0.3*cm))
+        story.append(Paragraph(
+            "Le score global est calculé par le système OmniRecrut IA selon un barème fixe et "
+            "identique pour tous les candidats. Le modèle de langage observe et cite — "
+            "le code calcule. Ce score est un outil d'aide à la décision humaine.",
+            petit))
+        story.append(Spacer(1, 0.3*cm))
+
+        # Tableau barème de référence
+        story.append(Paragraph("Barème de référence", h2))
+        bareme_data = [
+            [Paragraph("<b>Bloc évalué</b>", corps_b),
+             Paragraph("<b>Échelle</b>", corps_b),
+             Paragraph("<b>Points max</b>", corps_b),
+             Paragraph("<b>Ce qu'on évalue</b>", corps_b)],
+            [Paragraph("Parcours professionnel", corps),
+             Paragraph("0 à 3", corps),
+             Paragraph("35 pts", corps),
+             Paragraph("Richesse, cohérence, progression du parcours", corps)],
+            [Paragraph("Compétences transférables", corps),
+             Paragraph("0 à 3", corps),
+             Paragraph("30 pts", corps),
+             Paragraph("Compétences mobilisables dans d'autres contextes", corps)],
+            [Paragraph("Cohérence du projet pro", corps),
+             Paragraph("0 à 2", corps),
+             Paragraph("20 pts", corps),
+             Paragraph("Clarté et maturité du projet professionnel", corps)],
+            [Paragraph("Centres d'intérêt & engagements", corps),
+             Paragraph("0 à 2", corps),
+             Paragraph("15 pts", corps),
+             Paragraph("Loisirs, bénévolat, engagements révélateurs", corps)],
+            [Paragraph("<b>Total</b>", corps_b),
+             Paragraph("", corps),
+             Paragraph("<b>100 pts</b>", corps_b),
+             Paragraph("", corps)],
+        ]
+        t_bareme = Table(bareme_data, colWidths=[5*cm, 2.5*cm, 2.5*cm, 7*cm])
+        t_bareme.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), BLEU),
+            ('TEXTCOLOR', (0,0), (-1,0), BLANC),
+            ('BACKGROUND', (0,-1), (-1,-1), colors.HexColor("#dbeafe")),
+            ('ROWBACKGROUNDS', (0,1), (-1,-2),
+             [colors.HexColor("#f8fafc"), colors.white]),
+            ('GRID', (0,0), (-1,-1), 0.3, colors.HexColor("#e2e8f0")),
+            ('TOPPADDING', (0,0), (-1,-1), 5),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 5),
+            ('LEFTPADDING', (0,0), (-1,-1), 6),
+            ('VALIGN', (0,0), (-1,-1), 'TOP'),
+        ]))
+        story.append(t_bareme)
+        story.append(Spacer(1, 0.4*cm))
+
+        # Résultats du candidat
+        story.append(Paragraph(f"Résultats de {nom}", h2))
+        _total_pts = sum(b.get("pts", 0) for b in score_grille_blocs.values())
+        _total_max = sum(b.get("pts_max", 0) for b in score_grille_blocs.values())
+        couleur_total = VERT if _total_pts >= 70 else ORANGE if _total_pts >= 45 else ROUGE
+
+        resultats_data = [
+            [Paragraph("<b>Bloc</b>", corps_b),
+             Paragraph("<b>Note</b>", corps_b),
+             Paragraph("<b>Points</b>", corps_b),
+             Paragraph("<b>Justification — citation du CV</b>", corps_b)],
+        ]
+        for _cle, _bloc in score_grille_blocs.items():
+            _justif_pdf = str(_bloc.get("justif", "") or "Non renseigné")
+            resultats_data.append([
+                Paragraph(str(_bloc.get("label", _cle)), corps),
+                Paragraph(f"{_bloc.get('note', 0)}/{_bloc.get('note_max', 0)}", corps),
+                Paragraph(f"{_bloc.get('pts', 0)}/{_bloc.get('pts_max', 0)}", corps),
+                Paragraph(_justif_pdf, corps),
+            ])
+        resultats_data.append([
+            Paragraph("<b>Score global</b>", corps_b),
+            Paragraph("", corps),
+            Paragraph(f"<b>{round(_total_pts)}/{_total_max}</b>",
+                      ParagraphStyle('Tot', fontSize=9, textColor=couleur_total,
+                                     fontName='Helvetica-Bold')),
+            Paragraph("", corps),
+        ])
+        t_resultats = Table(resultats_data, colWidths=[4.5*cm, 2*cm, 2.5*cm, 8*cm])
+        t_resultats.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), BLEU),
+            ('TEXTCOLOR', (0,0), (-1,0), BLANC),
+            ('BACKGROUND', (0,-1), (-1,-1), colors.HexColor("#dbeafe")),
+            ('ROWBACKGROUNDS', (0,1), (-1,-2),
+             [colors.HexColor("#f8fafc"), colors.white]),
+            ('GRID', (0,0), (-1,-1), 0.3, colors.HexColor("#e2e8f0")),
+            ('TOPPADDING', (0,0), (-1,-1), 5),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 5),
+            ('LEFTPADDING', (0,0), (-1,-1), 6),
+            ('VALIGN', (0,0), (-1,-1), 'TOP'),
+        ]))
+        story.append(t_resultats)
+        story.append(Spacer(1, 0.3*cm))
+        story.append(Paragraph(
+            "⚠️ Ce score est un outil d'aide à la décision. Il ne se substitue pas au jugement "
+            "du recruteur humain. Les hypothèses comportementales sont à valider lors d'un entretien.",
+            petit))
 
     # ── Footer ────────────────────────────────────────────────────────────────
     story.append(Spacer(1, 0.4*cm))
@@ -2601,19 +2788,22 @@ def afficher_profil_candidat_enrichi(infos_candidat, conn):
                 </div>
             """, unsafe_allow_html=True)
         else:
-            # Profil venant du vivier → cercle numérique
+            # Profil venant du vivier → cercle numérique /100
             couleur_score = "#16a34a" if score_global >= 70 else "#ea580c" if score_global >= 45 else "#dc2626"
             st.markdown(f"""
                 <div style="display:flex; align-items:center; gap:18px; margin-bottom:10px;">
                     <div style="background:{couleur_score}; color:white; border-radius:50%;
-                                width:72px; height:72px; display:flex; align-items:center;
-                                justify-content:center; font-size:22px; font-weight:800;
-                                flex-shrink:0;">{score_global}%</div>
+                                width:80px; height:80px; display:flex; align-items:center;
+                                justify-content:center; flex-direction:column;
+                                flex-shrink:0;">
+                        <span style="font-size:20px; font-weight:800; line-height:1.1;">{score_global}</span>
+                        <span style="font-size:10px; font-weight:600; opacity:0.85;">/100</span>
+                    </div>
                     <div>
                         <div style="font-size:20px; font-weight:700; color:#e2e8f0;">{nom_h}</div>
                         <div style="color:#94a3b8; font-size:13px;">{poste_h}</div>
                         <div style="color:{couleur_score}; font-size:12px; font-weight:600; margin-top:2px;">
-                            Score d'employabilité global estimé
+                            Score OmniRecrut IA — grille d'évaluation fixe
                         </div>
                     </div>
                 </div>
@@ -2653,7 +2843,8 @@ def afficher_profil_candidat_enrichi(infos_candidat, conn):
                     transferables=transferables,
                     metiers_cibles=metiers_cibles,
                     avis_complet=avis_complet,
-                    style_cv=style_cv
+                    style_cv=style_cv,
+                    score_grille_blocs=profil_comportemental.get("score_grille_blocs")
                 )
             nom_fichier = f"OmniRecrut_{nom.replace(' ', '_')}.pdf"
             st.download_button(
@@ -2856,29 +3047,86 @@ def afficher_profil_candidat_enrichi(infos_candidat, conn):
 
         # ── Bloc 4 : Métiers cibles ───────────────────────────────────────────
         st.markdown("#### 🎯 Métiers cibles recommandés")
-        couleur_score = "#16a34a" if score_global >= 70 else "#ea580c" if score_global >= 45 else "#dc2626"
         if metiers_cibles_h:
             nb_metiers = len(metiers_cibles_h)
             rangs = ["🥇", "🥈", "🥉"] + [f"#{i+1}" for i in range(3, nb_metiers)]
             for i, metier_h in enumerate(metiers_cibles_h[:6]):
-                score_metier = max(30, score_global - (i * max(3, (score_global - 30) // max(nb_metiers, 1))))
-                couleur_m = "#16a34a" if score_metier >= 70 else "#ea580c" if score_metier >= 50 else "#6b7280"
                 st.markdown(f"""
                     <div style="background:#1e293b; border-radius:8px; padding:10px 14px;
-                                margin-bottom:6px; display:flex; align-items:center;
-                                justify-content:space-between;">
+                                margin-bottom:6px; display:flex; align-items:center;">
                         <span style="color:#e2e8f0; font-size:13px; font-weight:600;">{rangs[i]} {metier_h}</span>
-                        <span style="background:{couleur_m}; color:white; border-radius:12px;
-                                     padding:3px 10px; font-size:12px; font-weight:700;
-                                     min-width:48px; text-align:center;">{score_metier}%</span>
                     </div>
                 """, unsafe_allow_html=True)
-            st.caption("Classés du plus au moins pertinent par rapport à la solidité globale du profil.")
+            st.caption("Classés du plus au moins pertinent par l'analyse comportementale.")
         else:
             st.info("Aucun métier cible extrait.")
         st.markdown("---")
 
-        # ── Bloc 5 : Compte-rendu narratif ───────────────────────────────────
+        # ── Bloc 5 : Grille d'évaluation détaillée ───────────────────────────
+        _blocs_grille = profil_comportemental.get("score_grille_blocs", {})
+        if _blocs_grille:
+            st.markdown("#### 📊 Grille d'évaluation OmniRecrut IA")
+            st.caption(
+                "Score calculé par le système selon un barème fixe et identique pour tous les candidats. "
+                "Chaque note est justifiée par une citation directe du CV."
+            )
+            _total_pts = sum(b.get("pts", 0) for b in _blocs_grille.values())
+            _total_max = sum(b.get("pts_max", 0) for b in _blocs_grille.values())
+            _c_total = "#16a34a" if _total_pts >= 70 else "#ea580c" if _total_pts >= 45 else "#dc2626"
+            # Ligne total
+            st.markdown(f"""
+                <div style="background:#0f172a; border:2px solid {_c_total}; border-radius:8px;
+                            padding:10px 16px; margin-bottom:8px; display:flex;
+                            justify-content:space-between; align-items:center;">
+                    <span style="color:#e2e8f0; font-size:14px; font-weight:800;">
+                        Score global
+                    </span>
+                    <span style="color:{_c_total}; font-size:18px; font-weight:800;">
+                        {round(_total_pts)}/{_total_max} pts
+                    </span>
+                </div>
+            """, unsafe_allow_html=True)
+            # Détail par bloc
+            for _cle, _bloc in _blocs_grille.items():
+                _pts_pct = round((_bloc.get("pts", 0) / _bloc.get("pts_max", 1)) * 100)
+                _c = "#16a34a" if _pts_pct >= 70 else "#ea580c" if _pts_pct >= 40 else "#dc2626"
+                _justif = html.escape(str(_bloc.get("justif", "") or ""))
+                st.markdown(f"""
+                    <div style="background:#1e293b; border-radius:6px; padding:10px 14px;
+                                margin-bottom:6px; border-left:4px solid {_c};">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <span style="color:#e2e8f0; font-size:13px; font-weight:600;">
+                                {html.escape(str(_bloc.get('label', _cle)))}
+                            </span>
+                            <span style="color:{_c}; font-size:13px; font-weight:700;">
+                                {_bloc.get('pts', 0)}/{_bloc.get('pts_max', 0)} pts
+                                &nbsp;·&nbsp; note {_bloc.get('note', 0)}/{_bloc.get('note_max', 0)}
+                            </span>
+                        </div>
+                        <div style="color:#94a3b8; font-size:11px; margin-top:5px; font-style:italic;">
+                            📌 {_justif if _justif else 'Aucune citation fournie dans le CV'}
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
+            with st.expander("ℹ️ Comprendre la grille d'évaluation OmniRecrut IA"):
+                st.markdown("""
+**Barème fixe — identique pour tous les candidats analysés**
+
+| Bloc | Échelle | Points max | Ce qu'on évalue |
+|---|---|---|---|
+| Parcours professionnel | 0 à 3 | 35 pts | Richesse, cohérence, progression du parcours |
+| Compétences transférables | 0 à 3 | 30 pts | Compétences mobilisables dans d'autres contextes |
+| Cohérence du projet pro | 0 à 2 | 20 pts | Clarté et maturité du projet professionnel |
+| Centres d'intérêt & engagements | 0 à 2 | 15 pts | Loisirs, bénévolat, engagements révélateurs |
+| **Total** | | **100 pts** | |
+
+**Principes** : le score est calculé par le système OmniRecrut IA, jamais par le modèle de langage. 
+Gemini observe et cite — le code calcule. Chaque note est justifiée par une citation directe du CV.
+Ce score est un outil d'aide à la décision. Il ne se substitue pas au jugement du recruteur.
+""")
+        st.markdown("---")
+
+        # ── Bloc 6 : Compte-rendu narratif ───────────────────────────────────
         if avis_complet_h.strip():
             with st.expander("📄 Compte-rendu narratif complet de l'IA"):
                 st.markdown(f"""
@@ -3445,7 +3693,9 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
         if st.session_state.get("dernier_rapport_agent"):
             d = st.session_state["dernier_rapport_agent"].get("donnees_structurees") or {}
             nom_cand = d.get("nom_complet", "Candidat")
-            score = int(d.get("pourcentage_adequation", 0) or 0)
+            _grille = _calculer_score_grille(d)
+            score = _grille["score_total"]
+            _blocs = _grille["blocs"]
             metiers = d.get("metiers_cibles", [])
             traits_dom = d.get("traits_dominants", [])
             couleur_badge = "#2e7d32" if score >= 70 else "#f59e0b" if score >= 40 else "#c53030"
@@ -3459,14 +3709,37 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
                         </span>
                         <span style="background:{couleur_badge}; color:white; padding:5px 16px;
                                      border-radius:20px; font-weight:700; font-size:15px;">
-                            {score}%
+                            {score}/100
                         </span>
                     </div>
                     <div style="color:#a3b1cc; font-size:12px; margin-top:6px;">
-                        Score d'employabilité estimé · Consultez le vivier pour le profil complet enrichi et le PDF téléchargeable.
+                        Score OmniRecrut IA — grille fixe · Consultez le vivier pour le profil complet enrichi et le PDF téléchargeable.
                     </div>
                 </div>
             """, unsafe_allow_html=True)
+
+            # Détail de la grille sous le badge
+            st.markdown("**📊 Détail de la grille d'évaluation**")
+            for _cle, _bloc in _blocs.items():
+                _pts_pct = round((_bloc["pts"] / _bloc["pts_max"]) * 100) if _bloc["pts_max"] else 0
+                _c = "#16a34a" if _pts_pct >= 70 else "#ea580c" if _pts_pct >= 40 else "#dc2626"
+                st.markdown(f"""
+                    <div style="background:#1e293b; border-radius:6px; padding:8px 12px;
+                                margin-bottom:5px; border-left:3px solid {_c};">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <span style="color:#e2e8f0; font-size:12px; font-weight:600;">
+                                {_bloc['label']}
+                            </span>
+                            <span style="color:{_c}; font-size:12px; font-weight:700;">
+                                {_bloc['pts']}/{_bloc['pts_max']} pts
+                                (note {_bloc['note']}/{_bloc['note_max']})
+                            </span>
+                        </div>
+                        <div style="color:#94a3b8; font-size:11px; margin-top:3px; font-style:italic;">
+                            📌 {_bloc['justif'] if _bloc['justif'] else 'Aucune citation fournie'}
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
 
             if metiers:
                 st.markdown("**🎯 Métiers cibles**")
@@ -3510,10 +3783,15 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
                     if pd.isnull(x) or str(x).strip() in ("", "None"):
                         return "—"
                     s = str(x).strip()
+                    # Labels qualitatifs du matching (concordant, potentiel…) → affichés tels quels
+                    for _k in ("concordant", "potentiel", "partiel", "hors_perimetre", "🟢", "🟡", "🟠", "🔴"):
+                        if _k in s.lower():
+                            return s
+                    # Score numérique → affiché en /100
                     chiffres = "".join([c for c in s if c.isdigit() or c == "."])
                     if chiffres and any(c.isdigit() for c in s):
                         try:
-                            return f"{int(float(chiffres))} %"
+                            return f"{int(float(chiffres))}/100"
                         except ValueError:
                             pass
                     return s
