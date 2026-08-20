@@ -1234,10 +1234,10 @@ Retourne UNIQUEMENT un objet JSON valide avec exactement ces clés (sans markdow
 #   Total                       :       max 100 pts
 # ==============================================================================
 GRILLE_BAREME = {
-    "parcours":     {"max_note": 3, "max_pts": 35, "label": "Parcours professionnel"},
-    "competences":  {"max_note": 3, "max_pts": 30, "label": "Compétences transférables"},
-    "projet_pro":   {"max_note": 2, "max_pts": 20, "label": "Cohérence du projet pro"},
-    "centres":      {"max_note": 2, "max_pts": 15, "label": "Centres d'intérêt & engagements"},
+    "parcours":         {"max_note": 3, "max_pts": 35, "label": "Parcours professionnel"},
+    "competences":      {"max_note": 3, "max_pts": 30, "label": "Compétences transférables"},
+    "projet_pro":       {"max_note": 2, "max_pts": 20, "label": "Cohérence du projet pro"},
+    "centres_interet":  {"max_note": 2, "max_pts": 15, "label": "Centres d'intérêt & engagements"},
 }
 
 def _calculer_score_grille(donnees: dict) -> dict:
