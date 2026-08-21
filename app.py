@@ -2761,22 +2761,27 @@ def generer_pdf_candidat(nom, poste, score_global, traits_dominants,
 
     story.append(Spacer(1, 0.3*cm))
 
-    # ── Compétences transférables — liste verticale (textes longs) ────────────
+    # ── Compétences transférables — liste verticale pleine largeur ──────────
     story.append(Paragraph("Compétences transférables", corps_b))
     story.append(Spacer(1, 0.1*cm))
+    # Style texte blanc pour fond coloré
+    corps_blanc = ParagraphStyle('CorpsBlanc', fontSize=9, textColor=colors.white,
+                                  fontName='Helvetica', spaceAfter=3, leading=13)
     if transferables:
         for comp in transferables[:8]:
-            bloc_comp = Table([[Paragraph(f"✦  {comp}", corps)]], colWidths=[17*cm])
+            bloc_comp = Table([[Paragraph(f"✦  {comp}", corps_blanc)]], colWidths=[17*cm])
             bloc_comp.setStyle(TableStyle([
-                ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#1e293b")),
-                ('TOPPADDING', (0,0), (-1,-1), 5),
-                ('BOTTOMPADDING', (0,0), (-1,-1), 5),
-                ('LEFTPADDING', (0,0), (-1,-1), 8),
-                ('RIGHTPADDING', (0,0), (-1,-1), 8),
-                ('BOX', (0,0), (-1,-1), 0.3, colors.HexColor("#334155")),
+                ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#1a3a5c")),
+                ('TOPPADDING', (0,0), (-1,-1), 7),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 7),
+                ('LEFTPADDING', (0,0), (-1,-1), 10),
+                ('RIGHTPADDING', (0,0), (-1,-1), 10),
+                ('LEFTPADDING', (0,1), (0,1), 0),
+                ('BOX', (0,0), (-1,-1), 0, colors.white),
+                ('LINEAFTER', (0,0), (0,-1), 3, colors.HexColor("#2563eb")),
             ]))
             story.append(bloc_comp)
-            story.append(Spacer(1, 0.1*cm))
+            story.append(Spacer(1, 0.15*cm))
     else:
         story.append(Paragraph("Non extraites.", petit))
     story.append(Spacer(1, 0.2*cm))
