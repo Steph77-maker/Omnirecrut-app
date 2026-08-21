@@ -4171,30 +4171,17 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
 
                     afficher_profil_candidat_enrichi(infos_candidat, conn)
                     
-                    # --- ZONE DE SUPPRESSION ---
-                    cle_confirm = f"confirm_del_{id_selectionne}"
-                    if not st.session_state.get(cle_confirm):
-                        if st.button("🗑️ Supprimer ce candidat", key=f"btn_del_{id_selectionne}", use_container_width=True):
-                            st.session_state[cle_confirm] = True
+                    # --- ZONE DE SUPPRESSION (ÉPURÉE) ---
+                    confirmer_suppression = st.checkbox(f"Je confirme vouloir supprimer définitivement {candidat_selectionne} de la base", key=f"conf_del_{id_selectionne}")
+                    if st.button(f"❌ Supprimer le candidat", type="primary", disabled=not confirmer_suppression, use_container_width=True):
+                        try:
+                            c.execute("DELETE FROM candidats WHERE id = %s", (id_selectionne,))
+                            conn.commit()
+                            _charger_vivier_candidats.clear()
+                            st.success(f"Le candidat {candidat_selectionne} a été supprimé.")
                             st.rerun()
-                    else:
-                        st.warning(f"⚠️ Confirmer la suppression définitive de **{candidat_selectionne}** ?")
-                        col_oui, col_non = st.columns(2)
-                        with col_oui:
-                            if st.button("✅ Oui, supprimer", key=f"btn_del_oui_{id_selectionne}", type="primary", use_container_width=True):
-                                try:
-                                    c.execute("DELETE FROM candidats WHERE id = %s", (id_selectionne,))
-                                    conn.commit()
-                                    _charger_vivier_candidats.clear()
-                                    st.session_state.pop(cle_confirm, None)
-                                    st.success(f"Le candidat {candidat_selectionne} a été supprimé.")
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"Erreur : {e}")
-                        with col_non:
-                            if st.button("↩️ Annuler", key=f"btn_del_non_{id_selectionne}", use_container_width=True):
-                                st.session_state.pop(cle_confirm, None)
-                                st.rerun()
+                        except Exception as e:
+                            st.error(f"Erreur : {e}")
                     
                     st.markdown("### 🗓️ Gestion des Rendez-vous & Relances")
                     c.execute("SELECT type_rdv, date_rdv FROM candidats WHERE nom = %s", (candidat_selectionne,))
