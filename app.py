@@ -2677,25 +2677,32 @@ def generer_pdf_candidat(nom, poste, score_global, traits_dominants,
     col_g = []
     col_d = []
 
-    col_g.append(Paragraph("💼  Lecture du parcours professionnel", h2))
-    if indices_parcours:
-        col_g.append(Paragraph(str(indices_parcours), corps))
-    else:
-        col_g.append(Paragraph("Non renseigné.", petit))
-
-    col_d.append(Paragraph("🎯  Centres d'intérêt & engagements", h2))
-    if indices_centres and str(indices_centres).strip().lower() not in ("aucun", "non mentionné", ""):
-        col_d.append(Paragraph(str(indices_centres), corps))
-    else:
-        col_d.append(Paragraph("Aucun centre d'intérêt mentionné dans le CV.", petit))
-
-    t_deux = Table([[col_g, col_d]], colWidths=[8.3*cm, 8.3*cm])
-    t_deux.setStyle(TableStyle([
-        ('VALIGN', (0,0), (-1,-1), 'TOP'),
-        ('LEFTPADDING', (0,0), (-1,-1), 4),
-        ('RIGHTPADDING', (0,0), (-1,-1), 4),
+    # Parcours et centres d'intérêt en blocs verticaux pleine largeur
+    # (textes longs avec le nouveau prompt — le tableau 2 colonnes débordait)
+    story.append(Paragraph("💼  Lecture du parcours professionnel", h2))
+    parc_bloc = Table([[Paragraph(str(indices_parcours) if indices_parcours else "Non renseigné.", corps)]], colWidths=[17*cm])
+    parc_bloc.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#f0f4ff")),
+        ('TOPPADDING', (0,0), (-1,-1), 8), ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+        ('LEFTPADDING', (0,0), (-1,-1), 10), ('RIGHTPADDING', (0,0), (-1,-1), 10),
+        ('BOX', (0,0), (-1,-1), 0.3, colors.HexColor("#c7d7f5")),
     ]))
-    story.append(t_deux)
+    story.append(parc_bloc)
+    story.append(Spacer(1, 0.25*cm))
+
+    story.append(Paragraph("🎯  Centres d'intérêt & engagements", h2))
+    if indices_centres and str(indices_centres).strip().lower() not in ("aucun", "non mentionné", ""):
+        cent_txt = str(indices_centres)
+    else:
+        cent_txt = "Aucun centre d'intérêt mentionné dans le CV."
+    cent_bloc = Table([[Paragraph(cent_txt, corps)]], colWidths=[17*cm])
+    cent_bloc.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#f0f4ff")),
+        ('TOPPADDING', (0,0), (-1,-1), 8), ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+        ('LEFTPADDING', (0,0), (-1,-1), 10), ('RIGHTPADDING', (0,0), (-1,-1), 10),
+        ('BOX', (0,0), (-1,-1), 0.3, colors.HexColor("#c7d7f5")),
+    ]))
+    story.append(cent_bloc)
 
     if coherence_projet:
         story.append(Spacer(1, 0.2*cm))
@@ -2723,33 +2730,56 @@ def generer_pdf_candidat(nom, poste, score_global, traits_dominants,
         story.append(sty)
     story.append(Spacer(1, 0.3*cm))
 
-    # ── Compétences ───────────────────────────────────────────────────────────
+    # ── Compétences techniques (Hard Skills) — grille 3 colonnes ────────────
     story.append(bloc_header("🛠️  Compétences"))
     story.append(Spacer(1, 0.2*cm))
 
-    hs_col, tr_col = [], []
-    hs_col.append(Paragraph("Compétences techniques (Hard Skills)", corps_b))
+    story.append(Paragraph("Compétences techniques (Hard Skills)", corps_b))
+    story.append(Spacer(1, 0.1*cm))
     if hard_skills:
-        for hs in hard_skills[:12]:
-            hs_col.append(Paragraph(f"• {hs}", corps))
+        hs_limitees = hard_skills[:12]
+        while len(hs_limitees) % 3 != 0:
+            hs_limitees.append("")
+        hs_rows = []
+        for i in range(0, len(hs_limitees), 3):
+            hs_rows.append([
+                Paragraph(f"• {hs_limitees[i]}", corps) if hs_limitees[i] else Paragraph("", corps),
+                Paragraph(f"• {hs_limitees[i+1]}", corps) if hs_limitees[i+1] else Paragraph("", corps),
+                Paragraph(f"• {hs_limitees[i+2]}", corps) if hs_limitees[i+2] else Paragraph("", corps),
+            ])
+        t_hs = Table(hs_rows, colWidths=[5.5*cm, 5.5*cm, 5.5*cm])
+        t_hs.setStyle(TableStyle([
+            ('VALIGN', (0,0), (-1,-1), 'TOP'),
+            ('LEFTPADDING', (0,0), (-1,-1), 4),
+            ('RIGHTPADDING', (0,0), (-1,-1), 4),
+            ('TOPPADDING', (0,0), (-1,-1), 2),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 2),
+        ]))
+        story.append(t_hs)
     else:
-        hs_col.append(Paragraph("Non extraites.", petit))
+        story.append(Paragraph("Non extraites.", petit))
 
-    tr_col.append(Paragraph("Compétences transférables", corps_b))
+    story.append(Spacer(1, 0.3*cm))
+
+    # ── Compétences transférables — liste verticale (textes longs) ────────────
+    story.append(Paragraph("Compétences transférables", corps_b))
+    story.append(Spacer(1, 0.1*cm))
     if transferables:
         for comp in transferables[:8]:
-            tr_col.append(Paragraph(f"✦  {comp}", corps))
+            bloc_comp = Table([[Paragraph(f"✦  {comp}", corps)]], colWidths=[17*cm])
+            bloc_comp.setStyle(TableStyle([
+                ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#1e293b")),
+                ('TOPPADDING', (0,0), (-1,-1), 5),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 5),
+                ('LEFTPADDING', (0,0), (-1,-1), 8),
+                ('RIGHTPADDING', (0,0), (-1,-1), 8),
+                ('BOX', (0,0), (-1,-1), 0.3, colors.HexColor("#334155")),
+            ]))
+            story.append(bloc_comp)
+            story.append(Spacer(1, 0.1*cm))
     else:
-        tr_col.append(Paragraph("Non extraites.", petit))
-
-    t_comp = Table([[hs_col, tr_col]], colWidths=[8.3*cm, 8.3*cm])
-    t_comp.setStyle(TableStyle([
-        ('VALIGN', (0,0), (-1,-1), 'TOP'),
-        ('LEFTPADDING', (0,0), (-1,-1), 4),
-        ('RIGHTPADDING', (0,0), (-1,-1), 4),
-    ]))
-    story.append(t_comp)
-    story.append(Spacer(1, 0.3*cm))
+        story.append(Paragraph("Non extraites.", petit))
+    story.append(Spacer(1, 0.2*cm))
 
     # ── Métiers cibles ────────────────────────────────────────────────────────
     story.append(bloc_header("🎯  Métiers cibles recommandés"))
