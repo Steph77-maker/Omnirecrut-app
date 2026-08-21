@@ -1321,25 +1321,25 @@ JUSTIFICATION OBLIGATOIRE — format 3 temps :
 INTERPRÉTATION : [degré de maturité et de clarté du projet]
 LIMITE : [ce qui manque pour atteindre le niveau 2 — ou ce qui fragilise le niveau 2 attribué]"
 
-━━ BLOC D — CENTRES D'INTÉRÊT & ENGAGEMENTS (note de 0 à 1) ━━
-Critère binaire : y a-t-il au moins un engagement concret et vérifiable, ou non ?
-Ce bloc pèse peu dans le score final — ne sur-analyse pas.
+━━ BLOC D — CENTRES D'INTÉRÊT & ENGAGEMENTS (note de 0 à 2) ━━
+Évalue si les loisirs et engagements révèlent des traits de personnalité exploitables en recrutement.
 
-0 — Aucun centre d'intérêt mentionné, OU uniquement des mentions génériques sans substance
-    (ex. "lecture", "musique", "voyages", "cinéma" sans club, rôle, pratique régulière
-    ni engagement documenté) — ne révèlent rien d'actionnable sur la personnalité
-1 — Au moins 1 engagement concret et documenté : bénévolat avec rôle précisé, sport en club
-    ou en compétition, création artistique publiée ou présentée, projet personnel construit,
-    association avec responsabilité, engagement associatif ou citoyen identifiable —
-    quelque chose de vérifiable en entretien
+0 — Aucun centre d'intérêt mentionné dans le CV
+1 — Centres d'intérêt présents mais génériques et sans précision :
+    (ex. "lecture", "musique", "voyages", "cinéma" — sans club, sans pratique régulière,
+    sans engagement) — révèlent peu de chose sur la personnalité réelle
+2 — Au moins 1 engagement concret et documenté : bénévolat avec rôle précisé, sport en club
+    ou en compétition, création artistique publiée ou présentée, projet personnel construit
+    et documenté, association avec responsabilité — quelque chose qui révèle un trait
+    de caractère actionnable et vérifiable en entretien
 
-JUSTIFICATION OBLIGATOIRE — format 2 temps (concis) :
-"CONSTAT : [cite textuellement les centres d'intérêt mentionnés — ou « aucun »]
-VERDICT : [engagement concret présent ou absent, et pourquoi]"
+JUSTIFICATION OBLIGATOIRE — format 3 temps :
+"CONSTAT : [cite textuellement les centres d'intérêt mentionnés]
+INTERPRÉTATION : [ce qu'ils révèlent ou ne révèlent pas sur la personnalité]
+LIMITE : [pourquoi ce n'est pas un niveau supérieur — ou ce qui consolide le niveau attribué]"
 
-⚠️ NE CALCULE JAMAIS LE SCORE TOTAL. Tu fournis uniquement les 4 sous-scores
-(0, 1, 2 ou 3 selon le bloc — et 0 ou 1 pour le bloc D)
-et leurs justifications. Le calcul est effectué par le système OmniRecrut IA.
+⚠️ NE CALCULE JAMAIS LE SCORE TOTAL. Tu fournis uniquement les 4 sous-scores (0, 1, 2 ou 3 selon le bloc)
+et leurs justifications en 3 temps. Le calcul est effectué par le système OmniRecrut IA.
 
 ━━━ COMPTE-RENDU NARRATIF FINAL (compte_rendu) ━━━
 
@@ -1404,17 +1404,17 @@ Retourne UNIQUEMENT un objet JSON valide (sans markdown, sans texte avant ou apr
 # Ce code calcule le total selon le barème fixe ci-dessous, identique
 # pour tous les candidats, auditables et explicables à tout moment.
 # Barème :
-#   Parcours professionnel      : 0-3 → max 45 pts  (×15)
-#   Compétences transférables   : 0-3 → max 35 pts  (×11.667)
-#   Cohérence du projet pro     : 0-2 → max 15 pts  (×7.5)
-#   Centres d'intérêt           : 0-1 → max  5 pts  (×5)   — critère binaire : signal pertinent ou non
+#   Parcours professionnel      : 0-3 → max 35 pts  (×11.667)
+#   Compétences transférables   : 0-3 → max 30 pts  (×10)
+#   Cohérence du projet pro     : 0-2 → max 20 pts  (×10)
+#   Centres d'intérêt           : 0-2 → max 15 pts  (×7.5)
 #   Total                       :       max 100 pts
 # ==============================================================================
 GRILLE_BAREME = {
-    "parcours":         {"max_note": 3, "max_pts": 45, "label": "Parcours professionnel"},
-    "competences":      {"max_note": 3, "max_pts": 35, "label": "Compétences transférables"},
-    "projet_pro":       {"max_note": 2, "max_pts": 15, "label": "Cohérence du projet pro"},
-    "centres_interet":  {"max_note": 1, "max_pts":  5, "label": "Centres d'intérêt & engagements"},
+    "parcours":         {"max_note": 3, "max_pts": 35, "label": "Parcours professionnel"},
+    "competences":      {"max_note": 3, "max_pts": 30, "label": "Compétences transférables"},
+    "projet_pro":       {"max_note": 2, "max_pts": 20, "label": "Cohérence du projet pro"},
+    "centres_interet":  {"max_note": 2, "max_pts": 15, "label": "Centres d'intérêt & engagements"},
 }
 
 def _calculer_score_grille(donnees: dict) -> dict:
@@ -2836,20 +2836,20 @@ def generer_pdf_candidat(nom, poste, score_global, traits_dominants,
              Paragraph("<b>Ce qu'on évalue</b>", corps_b)],
             [Paragraph("Parcours professionnel", corps),
              Paragraph("0 à 3", corps),
-             Paragraph("45 pts", corps),
+             Paragraph("35 pts", corps),
              Paragraph("Richesse, cohérence, progression du parcours", corps)],
             [Paragraph("Compétences transférables", corps),
              Paragraph("0 à 3", corps),
-             Paragraph("35 pts", corps),
+             Paragraph("30 pts", corps),
              Paragraph("Compétences mobilisables dans d'autres contextes", corps)],
             [Paragraph("Cohérence du projet pro", corps),
              Paragraph("0 à 2", corps),
-             Paragraph("15 pts", corps),
+             Paragraph("20 pts", corps),
              Paragraph("Clarté et maturité du projet professionnel", corps)],
             [Paragraph("Centres d'intérêt & engagements", corps),
-             Paragraph("0 ou 1", corps),
-             Paragraph("5 pts", corps),
-             Paragraph("Engagement concret et vérifiable (critère binaire)", corps)],
+             Paragraph("0 à 2", corps),
+             Paragraph("15 pts", corps),
+             Paragraph("Loisirs, bénévolat, engagements révélateurs", corps)],
             [Paragraph("<b>Total</b>", corps_b),
              Paragraph("", corps),
              Paragraph("<b>100 pts</b>", corps_b),
@@ -3370,10 +3370,10 @@ def afficher_profil_candidat_enrichi(infos_candidat, conn):
 
 | Bloc | Échelle | Points max | Ce qu'on évalue |
 |---|---|---|---|
-| Parcours professionnel | 0 à 3 | 45 pts | Richesse, cohérence, progression du parcours |
-| Compétences transférables | 0 à 3 | 35 pts | Compétences mobilisables dans d'autres contextes |
-| Cohérence du projet pro | 0 à 2 | 15 pts | Clarté et maturité du projet professionnel |
-| Centres d'intérêt & engagements | 0 ou 1 | 5 pts | Engagement concret et vérifiable (critère binaire) |
+| Parcours professionnel | 0 à 3 | 35 pts | Richesse, cohérence, progression du parcours |
+| Compétences transférables | 0 à 3 | 30 pts | Compétences mobilisables dans d'autres contextes |
+| Cohérence du projet pro | 0 à 2 | 20 pts | Clarté et maturité du projet professionnel |
+| Centres d'intérêt & engagements | 0 à 2 | 15 pts | Loisirs, bénévolat, engagements révélateurs |
 | **Total** | | **100 pts** | |
 
 **Principes** : le score est calculé par le système OmniRecrut IA, jamais par le modèle de langage. 
@@ -4171,17 +4171,30 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
 
                     afficher_profil_candidat_enrichi(infos_candidat, conn)
                     
-                    # --- ZONE DE SUPPRESSION (ÉPURÉE) ---
-                    confirmer_suppression = st.checkbox(f"Je confirme vouloir supprimer définitivement {candidat_selectionne} de la base", key=f"conf_del_{id_selectionne}")
-                    if st.button(f"❌ Supprimer le candidat", type="primary", disabled=not confirmer_suppression, use_container_width=True):
-                        try:
-                            c.execute("DELETE FROM candidats WHERE id = %s", (id_selectionne,))
-                            conn.commit()
-                            _charger_vivier_candidats.clear()
-                            st.success(f"Le candidat {candidat_selectionne} a été supprimé.")
+                    # --- ZONE DE SUPPRESSION ---
+                    cle_confirm = f"confirm_del_{id_selectionne}"
+                    if not st.session_state.get(cle_confirm):
+                        if st.button("🗑️ Supprimer ce candidat", key=f"btn_del_{id_selectionne}", use_container_width=True):
+                            st.session_state[cle_confirm] = True
                             st.rerun()
-                        except Exception as e:
-                            st.error(f"Erreur : {e}")
+                    else:
+                        st.warning(f"⚠️ Confirmer la suppression définitive de **{candidat_selectionne}** ?")
+                        col_oui, col_non = st.columns(2)
+                        with col_oui:
+                            if st.button("✅ Oui, supprimer", key=f"btn_del_oui_{id_selectionne}", type="primary", use_container_width=True):
+                                try:
+                                    c.execute("DELETE FROM candidats WHERE id = %s", (id_selectionne,))
+                                    conn.commit()
+                                    _charger_vivier_candidats.clear()
+                                    st.session_state.pop(cle_confirm, None)
+                                    st.success(f"Le candidat {candidat_selectionne} a été supprimé.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Erreur : {e}")
+                        with col_non:
+                            if st.button("↩️ Annuler", key=f"btn_del_non_{id_selectionne}", use_container_width=True):
+                                st.session_state.pop(cle_confirm, None)
+                                st.rerun()
                     
                     st.markdown("### 🗓️ Gestion des Rendez-vous & Relances")
                     c.execute("SELECT type_rdv, date_rdv FROM candidats WHERE nom = %s", (candidat_selectionne,))
