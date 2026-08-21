@@ -2531,7 +2531,6 @@ options_menu = [
     "🎯 MATCHING IA OFFRES & CV",
     "🏢 PORTEFEUILLE CLIENTS",
     "✍️ RÉDACTION ANNONCES IA", 
-    "🖥️ TRI & CLASSEMENT IA",
     "🤝 MATCHING & OPPORTUNITÉS",
     "📊 PIPELINE DE RECRUTEMENT",
     "🏹 SOURCING EXTERNE & CHASSE",
@@ -3810,12 +3809,22 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
     with col_kpi3: st.metric(label="🔵 En Mission / Placement", value=mission_cand)
 
     st.markdown("---")
-    with st.expander("🧠 Nouvel Agent IA — Analyse enrichie d'un CV (sans offre de référence)", expanded=False):
-        st.caption("Diplômes, compétences dures, compétences transférables justifiées, indices de personnalité (parcours & centres d'intérêt) et métiers cibles — enregistrés automatiquement dans le vivier.")
-        fichier_cv_agent = st.file_uploader("CV au format PDF :", type=["pdf"], key="uploader_cv_agent")
+    with st.expander("🧠 Nouvel Agent IA — Analyse enrichie de CV (sans offre de référence)", expanded=False):
+        st.caption("Déposez jusqu'à 5 CV PDF. Chaque candidat est analysé individuellement : diplômes, compétences, personnalité, métiers cibles — enregistrés automatiquement dans le vivier avec leur profil complet.")
 
-        # Pré-sélection du secteur : si Gemini a suggéré un secteur lors de la dernière analyse,
-        # on positionne la selectbox dessus — l'utilisateur peut toujours modifier avant de relancer.
+        fichiers_cv_agent = st.file_uploader(
+            "CV au format PDF (5 max) :",
+            type=["pdf"],
+            accept_multiple_files=True,
+            key="uploader_cv_agent"
+        )
+
+        # Limite à 5 CV
+        if fichiers_cv_agent and len(fichiers_cv_agent) > 5:
+            st.warning("⚠️ Maximum 5 CV par lot. Seuls les 5 premiers seront analysés.")
+            fichiers_cv_agent = fichiers_cv_agent[:5]
+
+        # Pré-sélection du secteur
         _secteurs_disponibles = LISTE_SECTEURS[1:]  # sans "Tous"
         _secteur_suggere = st.session_state.get("secteur_suggere_agent", "")
         _index_defaut = _secteurs_disponibles.index(_secteur_suggere) if _secteur_suggere in _secteurs_disponibles else 0
@@ -3830,121 +3839,146 @@ elif st.session_state['page_active'] == "🗃️ VIVIER DE CANDIDATS":
             key="secteur_cv_agent",
         )
 
-        if st.button("🚀 Lancer l'agent d'analyse", key="btn_agent_cv"):
-            if not fichier_cv_agent:
-                st.error("⚠️ Merci de déposer un CV au format PDF.")
+        nb_cv = len(fichiers_cv_agent) if fichiers_cv_agent else 0
+        label_btn = f"🚀 Lancer l'analyse ({nb_cv} CV)" if nb_cv > 1 else "🚀 Lancer l'agent d'analyse"
+
+        if st.button(label_btn, key="btn_agent_cv"):
+            if not fichiers_cv_agent:
+                st.error("⚠️ Merci de déposer au moins un CV au format PDF.")
             elif not peut_utiliser_ia(st.session_state.get("user_email")):
                 st.error("⚠️ Vous avez atteint votre quota mensuel de requêtes IA. Contactez l'administrateur pour débloquer votre accès.")
             else:
-                try:
-                    reader_agent = PdfReader(fichier_cv_agent)
-                    texte_cv_agent = "".join([p.extract_text() for p in reader_agent.pages if p.extract_text()])
+                import threading, time as _time
 
-                    # ── Extraction image première page pour analyse visuelle ───────────
-                    _image_cv_bytes = None
-                    try:
-                        import fitz  # pymupdf
-                        import io
-                        fichier_cv_agent.seek(0)
-                        _pdf_bytes = fichier_cv_agent.read()
-                        _doc = fitz.open(stream=_pdf_bytes, filetype="pdf")
-                        _page = _doc[0]
-                        # 72 DPI suffisant pour l'analyse visuelle (couleurs, mise en page)
-                        # Réduit la taille de l'image de ~60% → Gemini répond plus vite
-                        _pix = _page.get_pixmap(dpi=72)
-                        _buf = io.BytesIO()
-                        _buf.write(_pix.tobytes("png"))
-                        _image_cv_bytes = _buf.getvalue()
-                        _doc.close()
-                    except Exception:
-                        _image_cv_bytes = None  # Pas bloquant — analyse texte seule si échec
+                _resultats_lot = []
+                _erreurs_lot = []
 
-                    # ── Progression animée — donne à voir le travail de l'IA ──────────
-                    _etapes = [
-                        ("🔍", "Lecture et structuration du CV..."),
-                        ("📋", "Extraction des compétences techniques..."),
-                        ("🔗", "Identification des compétences transférables..."),
-                        ("🧠", "Analyse comportementale du parcours..."),
-                        ("🎯", "Analyse des centres d'intérêt et engagements..."),
-                        ("🔗", "Évaluation de la cohérence du projet pro..."),
-                        ("📊", "Calcul du score d'employabilité..."),
-                        ("🏆", "Identification des métiers cibles..."),
-                        ("💾", "Enregistrement du profil dans le vivier..."),
-                    ]
-                    _placeholder = st.empty()
-                    _barre = st.progress(0)
-
-                    import threading, time as _time
-
-                    _resultat_agent_container = {}
-                    _erreur_container = {}
-
-                    def _lancer_analyse():
-                        try:
-                            _resultat_agent_container["res"] = analyser_cv_avec_agent(
-                                texte_cv_agent, secteur_cv_agent,
-                                image_cv_bytes=_image_cv_bytes
-                            )
-                        except Exception as _e:
-                            _erreur_container["err"] = _e
-
-                    _thread = threading.Thread(target=_lancer_analyse)
-                    _thread.start()
-
-                    _i = 0
-                    while _thread.is_alive():
-                        _etape = _etapes[min(_i, len(_etapes) - 1)]
-                        _placeholder.markdown(
-                            f"""<div style="background:#1e2a3a; border-left:3px solid #2d6cdf;
-                                border-radius:6px; padding:12px 16px; color:#94b8e8; font-size:13px;">
-                                {_etape[0]} <strong style="color:#c8dff8;">{_etape[1]}</strong>
-                            </div>""",
-                            unsafe_allow_html=True,
-                        )
-                        _progression = min(int((_i + 1) / len(_etapes) * 90), 90)
-                        _barre.progress(_progression)
-                        _time.sleep(2.0)
-                        _i += 1
-
-                    # Timeout global de 120s — si l'analyse dépasse ça, on abandonne proprement
-                    _thread.join(timeout=120)
-                    if _thread.is_alive():
-                        _placeholder.empty()
-                        _barre.empty()
-                        st.error("⏱️ L'analyse a dépassé le délai maximum (2 min). Réessayez dans quelques instants — les serveurs IA sont peut-être chargés.")
-                        st.stop()
-
-                    _barre.progress(100)
-                    _placeholder.markdown(
-                        """<div style="background:#0f2d1a; border-left:3px solid #16a34a;
-                            border-radius:6px; padding:12px 16px; color:#86efac; font-size:13px;">
-                            ✅ <strong>Analyse complète — enregistrement dans le vivier...</strong>
+                for _idx_cv, fichier_cv_agent in enumerate(fichiers_cv_agent):
+                    _nb_total = len(fichiers_cv_agent)
+                    st.markdown(
+                        f"""<div style="background:#1a2535; border-left:3px solid #ffb703;
+                            border-radius:6px; padding:10px 16px; color:#e2e8f0; font-size:13px;
+                            margin-bottom:8px;">
+                            📄 <strong>Analyse CV {_idx_cv + 1}/{_nb_total} :</strong>
+                            {fichier_cv_agent.name}
                         </div>""",
                         unsafe_allow_html=True,
                     )
-                    _time.sleep(0.5)
-                    _placeholder.empty()
-                    _barre.empty()
 
-                    if "err" in _erreur_container:
-                        raise _erreur_container["err"]
+                    try:
+                        reader_agent = PdfReader(fichier_cv_agent)
+                        texte_cv_agent = "".join([p.extract_text() for p in reader_agent.pages if p.extract_text()])
 
-                    resultat_agent = _resultat_agent_container["res"]
-                    incrémenter_quota_ia(st.session_state.get("user_email"))
-                    st.session_state["dernier_rapport_agent"] = resultat_agent
-                    # Mémorisation de la suggestion de secteur pour le prochain CV
-                    _secteur_ia = (resultat_agent.get("donnees_structurees") or {}).get("secteur_detecte", "")
-                    if _secteur_ia in _secteurs_disponibles:
-                        st.session_state["secteur_suggere_agent"] = _secteur_ia
-                    # Stocker les données de matching en attente pour exécution différée
-                    _mp = resultat_agent.get("_matching_pending")
-                    if _mp:
-                        st.session_state["_matching_pending"] = _mp
-                    st.success("✅ Candidat enregistré dans le vivier !")
-                    _charger_vivier_candidats.clear()
+                        # ── Extraction image première page pour analyse visuelle ──────
+                        _image_cv_bytes = None
+                        try:
+                            import fitz
+                            import io
+                            fichier_cv_agent.seek(0)
+                            _pdf_bytes = fichier_cv_agent.read()
+                            _doc = fitz.open(stream=_pdf_bytes, filetype="pdf")
+                            _page = _doc[0]
+                            _pix = _page.get_pixmap(dpi=72)
+                            _buf = io.BytesIO()
+                            _buf.write(_pix.tobytes("png"))
+                            _image_cv_bytes = _buf.getvalue()
+                            _doc.close()
+                        except Exception:
+                            _image_cv_bytes = None
+
+                        # ── Progression animée ────────────────────────────────────────
+                        _etapes = [
+                            ("🔍", "Lecture et structuration du CV..."),
+                            ("📋", "Extraction des compétences techniques..."),
+                            ("🔗", "Identification des compétences transférables..."),
+                            ("🧠", "Analyse comportementale du parcours..."),
+                            ("🎯", "Analyse des centres d'intérêt et engagements..."),
+                            ("📊", "Calcul du score d'employabilité..."),
+                            ("🏆", "Identification des métiers cibles..."),
+                            ("💾", "Enregistrement dans le vivier..."),
+                        ]
+                        _placeholder = st.empty()
+                        _barre = st.progress(0)
+
+                        _resultat_agent_container = {}
+                        _erreur_container = {}
+
+                        def _lancer_analyse():
+                            try:
+                                _resultat_agent_container["res"] = analyser_cv_avec_agent(
+                                    texte_cv_agent, secteur_cv_agent,
+                                    image_cv_bytes=_image_cv_bytes
+                                )
+                            except Exception as _e:
+                                _erreur_container["err"] = _e
+
+                        _thread = threading.Thread(target=_lancer_analyse)
+                        _thread.start()
+
+                        _i = 0
+                        while _thread.is_alive():
+                            _etape = _etapes[min(_i, len(_etapes) - 1)]
+                            _placeholder.markdown(
+                                f"""<div style="background:#1e2a3a; border-left:3px solid #2d6cdf;
+                                    border-radius:6px; padding:10px 16px; color:#94b8e8; font-size:13px;">
+                                    {_etape[0]} <strong style="color:#c8dff8;">{_etape[1]}</strong>
+                                </div>""",
+                                unsafe_allow_html=True,
+                            )
+                            _progression = min(int((_i + 1) / len(_etapes) * 90), 90)
+                            _barre.progress(_progression)
+                            _time.sleep(2.0)
+                            _i += 1
+
+                        _thread.join(timeout=120)
+                        if _thread.is_alive():
+                            _placeholder.empty()
+                            _barre.empty()
+                            st.error(f"⏱️ Timeout sur {fichier_cv_agent.name} — CV ignoré, passez au suivant.")
+                            _erreurs_lot.append(fichier_cv_agent.name)
+                            continue
+
+                        _barre.progress(100)
+                        _placeholder.empty()
+                        _barre.empty()
+
+                        if "err" in _erreur_container:
+                            st.error(f"❌ Erreur sur {fichier_cv_agent.name} : {_erreur_container['err']}")
+                            _erreurs_lot.append(fichier_cv_agent.name)
+                            continue
+
+                        resultat_agent = _resultat_agent_container["res"]
+                        incrémenter_quota_ia(st.session_state.get("user_email"))
+                        _resultats_lot.append(resultat_agent)
+
+                        # Mémorisation du secteur suggéré pour le prochain CV
+                        _secteur_ia = (resultat_agent.get("donnees_structurees") or {}).get("secteur_detecte", "")
+                        if _secteur_ia in _secteurs_disponibles:
+                            st.session_state["secteur_suggere_agent"] = _secteur_ia
+
+                        # Matching différé
+                        _mp = resultat_agent.get("_matching_pending")
+                        if _mp:
+                            st.session_state["_matching_pending"] = _mp
+
+                        nom_analyse = (resultat_agent.get("donnees_structurees") or {}).get("nom_complet", fichier_cv_agent.name)
+                        st.success(f"✅ **{nom_analyse}** enregistré dans le vivier.")
+
+                    except Exception as e:
+                        st.error(f"❌ Erreur sur {fichier_cv_agent.name} : {e}")
+                        _erreurs_lot.append(fichier_cv_agent.name)
+                        continue
+
+                # ── Bilan de lot ──────────────────────────────────────────────
+                _charger_vivier_candidats.clear()
+                if _resultats_lot:
+                    st.session_state["dernier_rapport_agent"] = _resultats_lot[-1]
+                    if len(_resultats_lot) > 1:
+                        st.info(f"🎯 **{len(_resultats_lot)} candidat(s) enregistré(s)** dans le vivier avec leur profil complet.")
+                if _erreurs_lot:
+                    st.warning(f"⚠️ {len(_erreurs_lot)} CV non traité(s) : {', '.join(_erreurs_lot)}")
+                if _resultats_lot:
                     st.rerun()
-                except Exception as e:
-                    st.error(f"Erreur lors de l'analyse : {e}")
 
         # --- RAPPORT DÉTAILLÉ STYLÉ (même codes visuels que le module de matching) ---
         if st.session_state.get("dernier_rapport_agent"):
@@ -5052,131 +5086,127 @@ elif st.session_state['page_active'] == "🤝 MATCHING & OPPORTUNITÉS":
                     _res_inv_safe = html.escape(str(st.session_state["resultat_matching_inverse"]))
                     st.markdown(f'<div style="background-color: #1e1e24; padding:20px; border-radius:8px; color:white; white-space:pre-wrap;">{_res_inv_safe}</div>', unsafe_allow_html=True)
 
-# --- 🖥️ ONGLET : TRI & CLASSEMENT IA ---
-elif st.session_state['page_active'] == "🖥️ TRI & CLASSEMENT IA":
-    st.header("🖥️ Tri de Masse & Sourcing Automatique")
+# --- 🤝 ONGLET : MATCHING & OPPORTUNITÉS (COMPLÉTÉ AVEC QUOTAS IA) ---
+elif st.session_state['page_active'] == "🤝 MATCHING & OPPORTUNITÉS":
+    st.header("🎯 Intelligence de Matching & Opportunités")
+    tab_classique, tab_inverse = st.tabs(["📋 Matching Classique (Besoins vs Candidats)", "🚀 Matching Inversé (Placement Proactif)"])
+    
+    with tab_classique:
+        st.subheader("🤝 Matching IA : Candidats vs Besoins")
+        col_besoin, col_vivier = st.columns(2)
+        with col_besoin:
+            secteur_besoin = st.selectbox("Secteur métier :", LISTE_SECTEURS, key="secteur_match")
+            entreprise_besoin = st.text_input("Entreprise cliente :", key="entreprise_match")
+            besoin_details = st.text_area("Détails du poste recherchés :", height=150, key="details_match_text")
+            st.caption("💾 Enregistrer active la veille automatique : chaque nouveau candidat ajouté au vivier sera comparé à ce besoin et générera une alerte si le profil correspond.")
+            if st.button("💾 Enregistrer ce besoin & activer les alertes", use_container_width=True):
+                if not besoin_details or secteur_besoin == "Tous" or not entreprise_besoin:
+                    st.error("⚠️ Entreprise, secteur et détails du poste requis.")
+                elif not peut_utiliser_ia(st.session_state.get("user_email")):
+                    st.error("⚠️ Vous avez atteint votre quota mensuel de requêtes IA. Contactez l'administrateur pour débloquer votre accès.")
+                else:
+                    c.execute(
+                        "INSERT INTO besoins_clients (entreprise, secteur, description, date_creation) VALUES (%s, %s, %s, %s) RETURNING id",
+                        (entreprise_besoin, secteur_besoin, besoin_details, datetime.datetime.now().isoformat()),
+                    )
+                    besoin_id_nouveau = c.fetchone()[0]
+                    conn.commit()
+                    with st.spinner("Comparaison avec le vivier existant..."):
+                        alertes = matcher_besoin_vs_vivier(besoin_id_nouveau, secteur_besoin, besoin_details)
+                    incrémenter_quota_ia(st.session_state.get("user_email"))
+                    st.success(f"✅ Besoin enregistré et veille activée pour '{entreprise_besoin}'.")
+                    if alertes:
+                        st.info(f"🔔 {len(alertes)} candidat(s) du vivier correspond(ent) déjà à ce besoin — voir le panneau Alertes dans la barre latérale.")
+                        st.session_state.pop("suggestion_sourcing", None)
+                    else:
+                        # Aucun match interne suffisant : l'IA se contente de SUGGÉRER le sourcing
+                        # externe, elle ne le lance jamais elle-même — le clic reste humain.
+                        st.session_state["suggestion_sourcing"] = {"poste": secteur_besoin, "entreprise": entreprise_besoin}
+                    st.rerun()
 
-    # La colonne de droite (« Récupération de CV par E-mail ») a été retirée :
-    # elle imposait de confier à l'application un mot de passe de messagerie,
-    # pour un service que le dépôt de fichiers ci-dessous rend plus vite et
-    # sans risque. Le tri occupe désormais toute la largeur.
-    col_gauche = st.container()
+            if st.session_state.get("suggestion_sourcing"):
+                sugg = st.session_state["suggestion_sourcing"]
+                st.warning(f"💡 Aucun candidat du vivier ne correspond suffisamment au besoin de **{sugg['entreprise']}**.")
+                if st.button("🔍 Lancer un sourcing externe pour ce besoin", use_container_width=True):
+                    st.session_state['page_active'] = "🏹 SOURCING EXTERNE & CHASSE"
+                    st.session_state.pop("suggestion_sourcing", None)
+                    st.rerun()
 
-    with col_gauche:
-        st.subheader("📊 Classificateur de Fichiers (Excel, CSV, PDF)")
-        fichiers_tri = st.file_uploader("Sélectionnez vos fichiers :", type=["xlsx", "csv", "pdf"], accept_multiple_files=True, key="uploader_masse")
-        if fichiers_tri:
-            st.success(f"📂 {len(fichiers_tri)} fichier(s) prêt(s) à être analysé(s).")
-            secteur_cible_tri = st.selectbox("Secteur métier ciblé :", LISTE_SECTEURS[1:], key="secteur_tri_masse")
-            critere_important = st.text_input("Exigence ou mot-clé prioritaire :", placeholder="Ex: Permis B...")
-
-            if st.button("🚀 LANCER LE TRI DE MASSE"):
-                # Vérification du quota IA
+        with col_vivier:
+            if st.button("🚀 LANCER LE MATCHING", type="primary", use_container_width=True):
+                # 1. Vérification du quota IA
                 if not peut_utiliser_ia(st.session_state.get("user_email")):
                     st.error("⚠️ Vous avez atteint votre quota mensuel de 300 requêtes IA. Contactez l'administrateur pour débloquer votre accès.")
                 else:
-                    st.info("🧠 L'IA analyse les documents... Patientez.")
-                    try:
-                        donnees_analyse = []
-                        for f in fichiers_tri:
-                            if f.name.endswith('.pdf'):
-                                reader = PdfReader(f)
-                                texte = "".join([page.extract_text() for page in reader.pages if page.extract_text()])
-                            else:
-                                df_temp = pd.read_csv(f) if f.name.endswith('.csv') else pd.read_excel(f)
-                                texte = df_temp.to_string()
-                            donnees_analyse.append({"nom_fichier": f.name, "contenu": texte[:3000]})
+                    c.execute("SELECT nom, poste, competences FROM candidats WHERE secteur_metier = %s", (secteur_besoin,))
+                    candidats_db = c.fetchall()
+                    if not candidats_db: 
+                        st.warning("Aucun candidat trouvé.")
+                    else:
+                        data_candidats = [{"nom": cand[0], "poste": cand[1], "competences": cand[2]} for cand in candidats_db]
+                        try:
+                            model = genai.GenerativeModel("gemini-2.5-flash")
+                            prompt = f"Compare ces candidats au besoin : '{besoin_details}'. Renvoie UN TABLEAU JSON avec uniquement : 'nom', 'score', 'raison'. Liste : {data_candidats}"
+                            response = model.generate_content(prompt)
+                            txt = response.text.strip()
+                            if "[" in txt: txt = txt[txt.find("[") : txt.rfind("]")+1]
+                            
+                            st.session_state["resultat_match_classique"] = json.loads(txt)
+                            
+                            # Incrémentation du quota (+1)
+                            incrémenter_quota_ia(st.session_state.get("user_email"))
 
-                        model = genai.GenerativeModel("gemini-2.5-flash")
-                        prompt = f"""Tu es un expert recruteur. Analyse les documents suivants par rapport au secteur '{secteur_cible_tri}' et au critère prioritaire '{critere_important}'.
+                        except Exception as e: 
+                            st.error(f"Erreur IA : {e}")
 
-Documents à analyser :
-{json.dumps(donnees_analyse, ensure_ascii=False)}
+            if "resultat_match_classique" in st.session_state:
+                df_res = pd.DataFrame(st.session_state["resultat_match_classique"])
+                st.dataframe(df_res, use_container_width=True, hide_index=True)
 
-Renvoie STRICTEMENT un tableau JSON valide (aucun texte autour, aucun markdown, aucun bloc de code),
-un objet par document, avec exactement ces clés :
-- "nom" : nom du fichier ou du candidat s'il est identifiable
-- "poste_approprie" : poste le plus adapté au profil selon le secteur cible
-- "score_tri" : entier 0-100 représentant l'adéquation avec le secteur et le critère
-- "points_forts" : une phrase courte sur les atouts principaux du profil"""
+    with tab_inverse:
+        st.markdown('<h3 style="color: #f6ad55;">💎 Placement Proactif de Pépites</h3>', unsafe_allow_html=True)
+        try:
+            c.execute("SELECT nom FROM candidats ORDER BY nom ASC")
+            liste_candidats_inv = [row[0] for row in c.fetchall()]
+        except Exception: 
+            liste_candidats_inv = []
 
-                        response = model.generate_content(prompt)
-                        txt_raw = response.text.strip()
-                        # Nettoyage robuste : suppression des balises markdown et extraction du tableau JSON
-                        txt_raw = txt_raw.replace("```json", "").replace("```", "").strip()
-                        debut = txt_raw.find("[")
-                        fin = txt_raw.rfind("]")
-                        if debut == -1 or fin == -1:
-                            st.error("⚠️ L'IA n'a pas renvoyé de tableau JSON exploitable. Réessayez.")
-                        else:
-                            txt_clean = txt_raw[debut:fin + 1]
-                            resultats_tri = json.loads(txt_clean)
-                            df_resultat = pd.DataFrame(resultats_tri)
-                            st.success(f"✅ {len(df_resultat)} profil(s) analysé(s).")
-                            st.dataframe(df_resultat, use_container_width=True)
+        candidat_pepite = st.selectbox("💎 Sélectionner la pépite à placer :", ["-- Choisir un candidat --"] + liste_candidats_inv)
+        if candidat_pepite != "-- Choisir un candidat --":
+            c.execute("SELECT poste, competences, cv_texte FROM candidats WHERE nom = %s", (candidat_pepite,))
+            res_cand = c.fetchone()
+            if res_cand:
+                poste_cand, comp_cand, cv_cand = res_cand[0], res_cand[1], res_cand[2]
+                st.info(f"🎯 Profil : {poste_cand} | Compétences : {comp_cand}")
+                
+                try:
+                    c.execute("SELECT entreprise, secteur, secteur_activite FROM clients")
+                    donnees_clients_inv = c.fetchall()
+                    liste_entreprises_texte = "\n".join([f"- {r[0]} ({r[2]} - {r[1]})" for r in donnees_clients_inv])
+                except Exception: 
+                    liste_entreprises_texte = ""
 
-                            # -------------------------------------------------------
-                            # INJECTION AUTOMATIQUE DANS LE VIVIER
-                            # Chaque candidat qualifié (score_tri >= 50) est inséré
-                            # automatiquement dans la table candidats avec statut
-                            # "Disponible" et la catégorie IA correspondante au score.
-                            # -------------------------------------------------------
-                            candidats_injectes = 0
-                            for ligne_tri in resultats_tri:
-                                try:
-                                    score_val = int(ligne_tri.get("score_tri", 0) or 0)
-                                    if score_val < 50:
-                                        continue  # profils trop faibles écartés
-                                    nom_tri = str(ligne_tri.get("nom", "Inconnu"))[:200]
-                                    poste_tri = str(ligne_tri.get("poste_approprie", secteur_cible_tri))[:200]
-                                    points_forts_tri = str(ligne_tri.get("points_forts", ""))[:500]
-                                    # Attribution de la catégorie IA selon le score
-                                    if score_val >= 80:
-                                        categorie_tri = "⭐ Top Profil"
-                                    elif score_val >= 65:
-                                        categorie_tri = "✅ Profil Confirmé"
-                                    elif score_val >= 50:
-                                        categorie_tri = "🌱 Junior / Débutant"
-                                    else:
-                                        categorie_tri = "À Classer"
-                                    c.execute(
-                                        """INSERT INTO candidats
-                                           (nom, poste, competences, statut, categorie_ia,
-                                            avis_ia, score_matching, secteur_metier, date_ajout)
-                                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                                        (
-                                            nom_tri,
-                                            poste_tri,
-                                            critere_important or secteur_cible_tri,
-                                            "Disponible",
-                                            categorie_tri,
-                                            points_forts_tri,
-                                            f"{score_val} %",
-                                            secteur_cible_tri,
-                                            datetime.datetime.now().isoformat(),
-                                        ),
-                                    )
-                                    candidats_injectes += 1
-                                except Exception:
-                                    pass
-                            if candidats_injectes > 0:
-                                conn.commit()
-                                _charger_vivier_candidats.clear()
-                                st.success(
-                                    f"🎯 **{candidats_injectes} fiche(s) automatiquement injectée(s)**"
-                                    f" et classée(s) dans le Vivier (secteur : {secteur_cible_tri})."
-                                    " Statut : **Disponible** — catégorie IA attribuée selon le score."
-                                )
-                            else:
-                                st.info("ℹ️ Aucun profil n'a atteint le seuil d'injection automatique (score ≥ 50).")
+                if st.button("🧠 Générer la stratégie de Placement Proactif", type="primary", use_container_width=True):
+                    # 1. Vérification du quota IA
+                    if not peut_utiliser_ia(st.session_state.get("user_email")):
+                        st.error("⚠️ Vous avez atteint votre quota mensuel de 300 requêtes IA. Contactez l'administrateur pour débloquer votre accès.")
+                    else:
+                        try:
+                            model = genai.GenerativeModel("gemini-2.5-flash")
+                            prompt_inverse = f"Analyse le profil du candidat ({poste_cand}, {comp_cand}) par rapport à notre portefeuille clients :\n{liste_entreprises_texte}\nIdentifie les meilleures cibles et rédige un pitch d'accroche commercial anonymisé percutant."
+                            response_inverse = model.generate_content(prompt_inverse)
+                            
+                            st.session_state["resultat_matching_inverse"] = response_inverse.text
+                            
+                            # Incrémentation du quota (+1)
+                            incrémenter_quota_ia(st.session_state.get("user_email"))
 
-                        # Décompte du quota (1 crédit par fichier analysé)
-                        user_email_actuel = st.session_state.get("user_email")
-                        for _ in range(len(fichiers_tri)):
-                            incrémenter_quota_ia(user_email_actuel)
+                        except Exception as e_inv:
+                            st.error(f"Erreur IA : {e_inv}")
 
-                    except Exception as e:
-                        st.error(f"Erreur de traitement : {e}")
+                if "resultat_matching_inverse" in st.session_state:
+                    _res_inv_safe = html.escape(str(st.session_state["resultat_matching_inverse"]))
+                    st.markdown(f'<div style="background-color: #1e1e24; padding:20px; border-radius:8px; color:white; white-space:pre-wrap;">{_res_inv_safe}</div>', unsafe_allow_html=True)
 
 # --- 🤝 ONGLET : MATCHING & OPPORTUNITÉS (COMPLÉTÉ AVEC QUOTAS IA) ---
 elif st.session_state['page_active'] == "🤝 MATCHING & OPPORTUNITÉS":
