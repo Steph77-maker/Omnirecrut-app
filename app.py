@@ -1447,7 +1447,7 @@ def _get_agent_model():
     return genai.GenerativeModel(
         model_name="gemini-2.5-flash",
         system_instruction=_SYSTEM_PROMPT_AGENT,
-        generation_config={"temperature": 0.3, "max_output_tokens": 8192},
+        generation_config={"temperature": 0.3, "max_output_tokens": 16384},
     )
 
 
@@ -1488,19 +1488,58 @@ def analyser_cv_avec_agent(texte_cv: str, secteur_metier: str, max_tentatives: i
             if texte.startswith("```"):
                 texte = re.sub(r"^```[a-z]*\n?", "", texte)
                 texte = re.sub(r"\n?```$", "", texte.strip())
-            # Tentative de parsing JSON — si tronqué, on tente une réparation minimale
+            # Tentative de parsing JSON — si tronqué, on tente une réparation robuste
             try:
                 donnees = json.loads(texte)
             except json.JSONDecodeError:
                 # Le JSON est peut-être tronqué (max_output_tokens atteint)
-                # On tente de fermer proprement le JSON en ajoutant les accolades manquantes
+                # Stratégie de réparation en 3 étapes :
                 texte_repare = texte.rstrip().rstrip(",")
-                # Compter les accolades ouvertes non fermées
+
+                # Étape 1 : si une chaîne est coupée en plein milieu (erreur "Unterminated string"),
+                # on tronque au dernier champ JSON complet identifiable
+                # On cherche la dernière clé JSON complète avec sa valeur
+                try:
+                    # Trouver la dernière virgule ou accolade ouvrante valide
+                    # pour couper proprement avant le champ tronqué
+                    dernier_champ_complet = max(
+                        texte_repare.rfind('",\n'),
+                        texte_repare.rfind('",\r\n'),
+                        texte_repare.rfind(']\n'),
+                        texte_repare.rfind('],\n'),
+                    )
+                    if dernier_champ_complet > len(texte_repare) // 2:
+                        texte_repare = texte_repare[:dernier_champ_complet + 1]
+                except Exception:
+                    pass
+
+                # Étape 2 : fermer les tableaux et objets ouverts
+                texte_repare = texte_repare.rstrip().rstrip(",")
                 ouvertes = texte_repare.count("{") - texte_repare.count("}")
                 crochets = texte_repare.count("[") - texte_repare.count("]")
-                # Fermer les tableaux puis les objets
                 texte_repare += "]" * max(0, crochets) + "}" * max(0, ouvertes)
+
+                # Étape 3 : parsing final — si ça échoue encore, on lève l'exception
                 donnees = json.loads(texte_repare)
+
+                # Remplir les champs manquants avec des valeurs par défaut
+                # pour ne pas bloquer l'enregistrement en base
+                champs_defaut = {
+                    "nom_complet": "Inconnu",
+                    "hard_skills": [], "diplomes": [],
+                    "soft_skills_transferables": [], "traits_dominants": [],
+                    "indices_parcours_pro": "", "indices_centres_interet": "",
+                    "coherence_projet_pro": "", "metiers_cibles": [],
+                    "score_parcours": 0, "score_justification_parcours": "Analyse tronquée",
+                    "score_competences": 0, "score_justification_competences": "Analyse tronquée",
+                    "score_projet_pro": 0, "score_justification_projet_pro": "Analyse tronquée",
+                    "score_centres_interet": 0, "score_justification_centres_interet": "Analyse tronquée",
+                    "compte_rendu": "⚠️ Analyse partiellement tronquée — relancez l'analyse pour obtenir le rapport complet.",
+                    "secteur_detecte": "Autre", "style_cv": "",
+                }
+                for cle, val_defaut in champs_defaut.items():
+                    if cle not in donnees:
+                        donnees[cle] = val_defaut
             # Enregistrement direct en base — sans passer par le function calling
             donnees["secteur_metier"] = secteur_metier
             donnees["cv_texte"] = texte_cv
